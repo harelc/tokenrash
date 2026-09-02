@@ -33,10 +33,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let root = OverlayView(onSignIn: { [weak self] in self?.iap.signIn() })
             .environment(store)
         hosting = NSHostingView(rootView: AnyView(root))
-        hosting.frame = NSRect(x: 0, y: 0, width: 296, height: 436)
+        hosting.frame = NSRect(x: 0, y: 0, width: 200, height: 300)
+        hosting.autoresizingMask = [.width, .height]
+
+        let container = OverlayContainer(frame: hosting.frame)
+        container.addSubview(hosting)
+
+        let handleSize: CGFloat = 30
+        let handlePad: CGFloat = 6
+        let handle = ResizeHandleView(frame: NSRect(
+            x: container.bounds.maxX - handleSize - handlePad,
+            y: handlePad,
+            width: handleSize,
+            height: handleSize
+        ))
+        handle.autoresizingMask = [.minXMargin, .maxYMargin]
+        container.addSubview(handle)
 
         overlay = OverlayPanel(
-            contentRect: hosting.frame,
+            contentRect: container.frame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -49,7 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.isMovableByWindowBackground = true
         overlay.hidesOnDeactivate = false
         overlay.isReleasedWhenClosed = false
-        overlay.contentView = hosting
+        overlay.minSize = NSSize(width: ResizeHandleView.minWidth, height: ResizeHandleView.minWidth * ResizeHandleView.aspect)
+        overlay.maxSize = NSSize(width: ResizeHandleView.maxWidth, height: ResizeHandleView.maxWidth * ResizeHandleView.aspect)
+        overlay.contentView = container
         overlay.ignoresMouseEvents = false
 
         positionOverlay()
@@ -82,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         let clickThrough = menu.addItem(withTitle: "Click through", action: #selector(toggleClickThrough), keyEquivalent: "")
         clickThrough.state = overlay.ignoresMouseEvents ? .on : .off
+        menu.addItem(withTitle: "Reset size", action: #selector(resetSize), keyEquivalent: "")
         menu.addItem(.separator())
         if store.budget != nil {
             menu.addItem(withTitle: "Sign out", action: #selector(signOut), keyEquivalent: "")
@@ -98,7 +116,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func signInOrRefresh() {
-        iap.signIn()
+        if store.budget == nil {
+            iap.signIn()
+        } else {
+            iap.refreshNow()
+        }
     }
 
     @objc private func inspect() {
@@ -120,8 +142,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
+    @objc private func resetSize() {
+        var frame = overlay.frame
+        let oldHeight = frame.height
+        frame.size = NSSize(width: 200, height: 300)
+        frame.origin.y += oldHeight - 300
+        overlay.setFrame(frame, display: true)
+        UserDefaults.standard.set(NSStringFromRect(overlay.frame), forKey: "overlay.frame.v2")
+    }
+
     private func positionOverlay() {
-        if let saved = UserDefaults.standard.string(forKey: "overlay.frame") {
+        if let saved = UserDefaults.standard.string(forKey: "overlay.frame.v2") {
             let rect = NSRectFromString(saved)
             if rect.width > 40, NSScreen.screens.contains(where: { $0.visibleFrame.intersects(rect) }) {
                 overlay.setFrame(rect, display: true)
@@ -137,19 +168,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func syncBadge() {
         if let budget = store.budget {
-            statusItem.button?.title = TokenFormat.percent(budget.remainingFraction)
-            statusItem.button?.toolTip = "\(TokenFormat.tokens(budget.remaining)) of \(TokenFormat.tokens(budget.limit)) left today"
+            statusItem.button?.title = TokenFormat.usd(budget.remaining)
+            statusItem.button?.toolTip = "\(TokenFormat.usd(budget.remaining)) left out of \(TokenFormat.usd(budget.limit)) today"
             statusItem.button?.contentTintColor = budget.isCritical ? NSColor.systemRed : nil
         } else {
             statusItem.button?.title = ""
             statusItem.button?.toolTip = "Tokenrash — sign in to load daily budget"
             statusItem.button?.contentTintColor = nil
         }
-        UserDefaults.standard.set(NSStringFromRect(overlay.frame), forKey: "overlay.frame")
+        UserDefaults.standard.set(NSStringFromRect(overlay.frame), forKey: "overlay.frame.v2")
     }
 }
 
 final class OverlayPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+}
+
+/// Clear container so the hourglass stays draggable except on the resize handle.
+final class OverlayContainer: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+    override var isOpaque: Bool { false }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    required init?(coder: NSCoder) { nil }
 }

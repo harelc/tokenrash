@@ -24,12 +24,28 @@ struct TokenBudget: Equatable {
 enum TokenBudgetParser {
     static func parse(data: Data) throws -> (TokenBudget, String) {
         let object = try JSONSerialization.jsonObject(with: data)
+        return try parse(object: object, fallbackPretty: String(data: data, encoding: .utf8) ?? "")
+    }
+
+    static func parse(text: String) throws -> (TokenBudget, String) {
+        let blob = extractJSONBlob(from: text) ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = blob.data(using: .utf8) else {
+            throw ParserError.unrecognized(text)
+        }
+        do {
+            return try parse(data: data)
+        } catch {
+            throw ParserError.unrecognized(blob)
+        }
+    }
+
+    private static func parse(object: Any, fallbackPretty: String) throws -> (TokenBudget, String) {
         let pretty: String
         if let prettyData = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
            let text = String(data: prettyData, encoding: .utf8) {
             pretty = text
         } else {
-            pretty = String(data: data, encoding: .utf8) ?? ""
+            pretty = fallbackPretty
         }
         guard let budget = extract(from: object) else {
             throw ParserError.unrecognized(pretty)
@@ -37,23 +53,126 @@ enum TokenBudgetParser {
         return (budget, pretty)
     }
 
-    static func parse(text: String) throws -> (TokenBudget, String) {
+    static func extractJSONBlob(from text: String) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = trimmed.data(using: .utf8) else {
-            throw ParserError.unrecognized(trimmed)
+        if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") { return trimmed }
+        guard let start = trimmed.firstIndex(where: { $0 == "{" || $0 == "[" }) else { return nil }
+        let open = trimmed[start]
+        let close: Character = open == "{" ? "}" : "]"
+        if let end = trimmed.lastIndex(of: close), end >= start {
+            return String(trimmed[start...end])
         }
-        return try parse(data: data)
+        return nil
     }
 
     private static func extract(from object: Any) -> TokenBudget? {
-        var scored: [(Int, [String: Any], String)] = []
+        if let tokendash = tokendashToday(from: object) {
+            return tokendash
+        }
+        if let sameDict = bestSameDict(in: object) {
+            return sameDict
+        }
+        return pairedAcrossTree(object)
+    }
+
+    /// `{ today: { spend_usd, effective_limit_usd, standing_limit_usd } }` — spend is used, not remaining.
+    private static func tokendashToday(from object: Any) -> TokenBudget? {
+        guard let root = object as? [String: Any],
+              let today = root["today"] as? [String: Any] else { return nil }
+        let used = number(today["spend_usd"])
+        let limit = number(today["effective_limit_usd"])
+            ?? number(today["standing_limit_usd"])
+            ?? number(today["limit_usd"])
+        guard let used, let limit, limit > 0 else { return nil }
+        return TokenBudget(
+            used: used,
+            limit: limit,
+            email: firstEmail(in: object),
+            resetsAt: firstDate(in: today) ?? firstDate(in: object),
+            label: "today"
+        )
+    }
+
+    private static func bestSameDict(in object: Any) -> TokenBudget? {
+        var scored: [(Int, TokenBudget)] = []
         walk(object, path: "") { dict, path in
-            if let score = score(dict) {
-                scored.append((score, dict, path))
+            if let budget = budget(from: dict, email: firstEmail(in: object), path: path) {
+                var score = 4
+                let p = path.lowercased()
+                if p.contains("daily") || p.contains("today") { score += 6 }
+                if p.contains("budget") || p.contains("quota") { score += 3 }
+                scored.append((score, budget))
             }
         }
-        guard let best = scored.max(by: { $0.0 < $1.0 }) else { return nil }
-        return budget(from: best.1, email: firstEmail(in: object), path: best.2)
+        return scored.max(by: { $0.0 < $1.0 })?.1
+    }
+
+    private static func pairedAcrossTree(_ object: Any) -> TokenBudget? {
+        var fields: [NumField] = []
+        flatten(object, path: "", into: &fields)
+        let useds = fields.filter { $0.kind == .used }
+        let limits = fields.filter { $0.kind == .limit }
+        let remainings = fields.filter { $0.kind == .remaining }
+        let percents = fields.filter { $0.kind == .percent }
+
+        var best: (Int, Double, Double, String)?
+
+        func consider(used: Double, limit: Double, path: String, score: Int) {
+            guard limit > 0 else { return }
+            if let current = best, current.0 >= score { return }
+            best = (score, used, limit, path)
+        }
+
+        for used in useds {
+            for limit in limits where used.path != limit.path {
+                var score = 1
+                if parentPath(used.path) == parentPath(limit.path) { score += 10 }
+                if used.path.lowercased().contains("daily") || limit.path.lowercased().contains("daily") { score += 6 }
+                if used.path.lowercased().contains("today") || limit.path.lowercased().contains("today") { score += 5 }
+                consider(used: used.value, limit: limit.value, path: "\(used.path)+\(limit.path)", score: score)
+            }
+        }
+
+        if best == nil, let used = useds.max(by: { $0.value < $1.value }), let remaining = remainings.first {
+            consider(used: used.value, limit: used.value + max(0, remaining.value), path: used.path, score: 3)
+        }
+        if best == nil, let limit = limits.first, let remaining = remainings.first {
+            consider(used: max(0, limit.value - remaining.value), limit: limit.value, path: limit.path, score: 3)
+        }
+        if best == nil, let percent = percents.first {
+            let fraction = percent.value > 1 ? percent.value / 100 : percent.value
+            if let limit = limits.first {
+                consider(used: limit.value * fraction, limit: limit.value, path: percent.path, score: 2)
+            } else {
+                consider(used: fraction, limit: 1, path: percent.path, score: 1)
+            }
+        }
+
+        guard let best else { return nil }
+        return TokenBudget(
+            used: min(best.1, best.2 * 1.15),
+            limit: best.2,
+            email: firstEmail(in: object),
+            resetsAt: firstDate(in: object),
+            label: best.3
+        )
+    }
+
+    private static func flatten(_ object: Any, path: String, into fields: inout [NumField]) {
+        if let dict = object as? [String: Any] {
+            for (key, value) in dict {
+                let next = path.isEmpty ? key : "\(path).\(key)"
+                if let number = number(value), let kind = kind(forKey: key) {
+                    fields.append(NumField(path: next, key: key, value: number, kind: kind))
+                } else {
+                    flatten(value, path: next, into: &fields)
+                }
+            }
+        } else if let array = object as? [Any] {
+            for (i, value) in array.enumerated() {
+                flatten(value, path: "\(path)[\(i)]", into: &fields)
+            }
+        }
     }
 
     private static func walk(_ object: Any, path: String, visit: ([String: Any], String) -> Void) {
@@ -69,26 +188,11 @@ enum TokenBudgetParser {
         }
     }
 
-    private static func score(_ dict: [String: Any]) -> Int? {
-        let used = firstNumber(in: dict, keys: usedKeys)
-        let limit = firstNumber(in: dict, keys: limitKeys)
-        let remaining = firstNumber(in: dict, keys: remainingKeys)
-        let percent = firstNumber(in: dict, keys: percentKeys)
-        guard used != nil || remaining != nil || percent != nil else { return nil }
-        guard limit != nil || remaining != nil || percent != nil else { return nil }
-        var score = 0
-        if used != nil { score += 3 }
-        if limit != nil { score += 3 }
-        if remaining != nil { score += 2 }
-        if percent != nil { score += 1 }
-        return score
-    }
-
     private static func budget(from dict: [String: Any], email: String?, path: String) -> TokenBudget? {
-        let usedValue = firstNumber(in: dict, keys: usedKeys)
-        let limitValue = firstNumber(in: dict, keys: limitKeys)
-        let remainingValue = firstNumber(in: dict, keys: remainingKeys)
-        var percentValue = firstNumber(in: dict, keys: percentKeys)
+        let usedValue = firstNumber(in: dict, kinds: [.used])
+        let limitValue = firstNumber(in: dict, kinds: [.limit])
+        let remainingValue = firstNumber(in: dict, kinds: [.remaining])
+        var percentValue = firstNumber(in: dict, kinds: [.percent])
         if let p = percentValue, p > 1 { percentValue = p / 100 }
 
         var limit = limitValue
@@ -110,12 +214,7 @@ enum TokenBudgetParser {
         }
 
         guard var used, var limit, limit > 0 else { return nil }
-        if used > limit * 4, used > 10_000, limit < 100 {
-            // Likely mixed units; keep used and treat limit as already consumed-relative.
-            limit = max(limit, used)
-        }
         used = min(used, limit * 1.15)
-
         return TokenBudget(
             used: used,
             limit: limit,
@@ -135,15 +234,20 @@ enum TokenBudgetParser {
         return found
     }
 
-    private static func firstNumber(in dict: [String: Any], keys: [String]) -> Double? {
-        let mapped = Dictionary(uniqueKeysWithValues: dict.map { ($0.key.lowercased(), $0.value) })
-        for key in keys {
-            if let value = number(mapped[key.lowercased()]) { return value }
-        }
-        for (key, value) in mapped {
-            if keys.contains(where: { key == $0 || key.hasSuffix("_\($0)") || key.hasSuffix($0) }) {
-                if let number = number(value) { return number }
+    private static func firstDate(in object: Any) -> Date? {
+        var found: Date?
+        walk(object, path: "") { dict, _ in
+            if found == nil {
+                found = firstDate(in: dict)
             }
+        }
+        return found
+    }
+
+    private static func firstNumber(in dict: [String: Any], kinds: Set<Kind>) -> Double? {
+        for (key, value) in dict {
+            guard let kind = kind(forKey: key), kinds.contains(kind) else { continue }
+            if let number = number(value) { return number }
         }
         return nil
     }
@@ -180,20 +284,43 @@ enum TokenBudgetParser {
         }
     }
 
-    private static let usedKeys = [
-        "used", "usage", "spent", "consumed", "tokens_used", "used_tokens",
-        "daily_used", "tokens", "total_tokens", "prompt_tokens", "current"
+    private static func kind(forKey raw: String) -> Kind? {
+        let key = raw.lowercased()
+        if ignoredKeys.contains(where: { key == $0 || key.hasSuffix("_\($0)") }) { return nil }
+        if key.contains("percent") || key.hasSuffix("pct") || key.contains("fraction") { return .percent }
+        if key.contains("remain") || key == "left" || key.contains("available") { return .remaining }
+        if key.contains("limit") || key.contains("budget") || key.contains("quota")
+            || key.contains("allowance") || key == "cap" || key.hasSuffix("_max") || key == "max" {
+            return .limit
+        }
+        if key.contains("used") || key.contains("usage") || key.contains("spent") || key.contains("spend")
+            || key.contains("consumed") || key.contains("cost") || key == "tokens"
+            || key.contains("tokens") || key == "current" {
+            return .used
+        }
+        return nil
+    }
+
+    private static func parentPath(_ path: String) -> String {
+        if let idx = path.lastIndex(of: ".") { return String(path[..<idx]) }
+        return ""
+    }
+
+    private static let ignoredKeys: Set<String> = [
+        "id", "status", "code", "port", "ttl", "exp", "iat", "width", "height",
+        "timestamp", "created", "updated", "year", "month", "day", "hour"
     ]
-    private static let limitKeys = [
-        "limit", "budget", "cap", "quota", "daily_budget", "daily_limit",
-        "max", "allowance", "tokens_limit", "token_budget", "daily_quota"
-    ]
-    private static let remainingKeys = [
-        "remaining", "left", "tokens_remaining", "remaining_tokens", "available"
-    ]
-    private static let percentKeys = [
-        "percent", "percentage", "used_pct", "pct", "fraction", "used_fraction"
-    ]
+
+    private struct NumField {
+        var path: String
+        var key: String
+        var value: Double
+        var kind: Kind
+    }
+
+    private enum Kind {
+        case used, limit, remaining, percent
+    }
 
     enum ParserError: LocalizedError {
         case unrecognized(String)
@@ -206,27 +333,28 @@ enum TokenBudgetParser {
 }
 
 enum TokenFormat {
-    static func tokens(_ value: Double) -> String {
-        let abs = Swift.abs(value)
-        switch abs {
-        case 1_000_000_000...: return String(format: "%.1fB", value / 1_000_000_000).replacingOccurrences(of: ".0B", with: "B")
-        case 1_000_000...: return String(format: "%.1fM", value / 1_000_000).replacingOccurrences(of: ".0M", with: "M")
-        case 10_000...: return String(format: "%.0fK", value / 1_000)
-        case 1_000...: return String(format: "%.1fK", value / 1_000).replacingOccurrences(of: ".0K", with: "K")
-        default: return String(format: "%.0f", value)
-        }
+    static func usd(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "USD"
+        formatter.currencySymbol = "$"
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: value)) ?? String(format: "$%.2f", value)
     }
+
+    static func tokens(_ value: Double) -> String { usd(value) }
 
     static func percent(_ fraction: Double) -> String {
         String(format: "%.0f%%", (fraction * 100).rounded())
     }
 
     static func countdown(to date: Date, now: Date = Date()) -> String {
-        let remaining = max(0, date.timeIntervalSince(now))
-        let hours = Int(remaining) / 3600
-        let minutes = (Int(remaining) % 3600) / 60
-        if hours > 0 { return "\(hours)h \(minutes)m" }
-        return "\(minutes)m"
+        let remaining = max(0, Int(date.timeIntervalSince(now).rounded()))
+        let hours = remaining / 3600
+        let minutes = (remaining % 3600) / 60
+        let seconds = remaining % 60
+        return String(format: "%d:%02d:%02d", hours, minutes, seconds)
     }
 
     static func nextMidnight(from now: Date = Date()) -> Date {

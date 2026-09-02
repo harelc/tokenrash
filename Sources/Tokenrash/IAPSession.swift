@@ -3,24 +3,21 @@ import Foundation
 import WebKit
 
 @MainActor
-final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate {
+final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     let store: BudgetStore
     private var webView: WKWebView!
     private var loginWindow: NSWindow?
+    private var keeperWindow: NSWindow!
     private var loginDelegate: LoginWindowCloser?
     private var pollTimer: Timer?
-    private var cookieSession: URLSession
-    private var waitingForJSON = false
+    private var probing = false
+    private let dumpURL = URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent("Library/Logs/Tokenrash-last-me.json")
+    private let captureURL = URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent("Library/Logs/Tokenrash-captures.jsonl")
 
     init(store: BudgetStore) {
         self.store = store
-        let cookies = HTTPCookieStorage.shared
-        cookies.cookieAcceptPolicy = .always
-        let config = URLSessionConfiguration.default
-        config.httpCookieStorage = cookies
-        config.httpCookieAcceptPolicy = .always
-        config.httpShouldSetCookies = true
-        self.cookieSession = URLSession(configuration: config)
         super.init()
         setupWebView()
     }
@@ -37,21 +34,26 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     func signIn() {
         store.phase = .signingIn
+        probing = false
         showLoginWindow()
-        waitingForJSON = true
         webView.load(URLRequest(url: TokenrashConfig.meURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+    }
+
+    /// Reload `/me` in the hidden keeper WebView. Only surfaces a window if IAP
+    /// bounces to Google and the user actually needs to sign in again.
+    func refreshNow() {
+        Task { await refresh(interactive: false) }
     }
 
     func signOut() {
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         WKWebsiteDataStore.default().removeData(ofTypes: types, modifiedSince: .distantPast) { }
-        HTTPCookieStorage.shared.cookies?.forEach { HTTPCookieStorage.shared.deleteCookie($0) }
         store.markSignedOut()
         closeLogin()
     }
 
     func inspectPayload() {
-        let json = store.rawJSON ?? "No payload yet. Sign in first."
+        let json = store.rawJSON ?? (try? String(contentsOf: dumpURL, encoding: .utf8)) ?? "No payload yet. Sign in first."
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
             styleMask: [.titled, .closable, .resizable],
@@ -74,10 +76,8 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    // MARK: - WKNavigationDelegate
-
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        Task { await harvestIfPossible() }
+        Task { await pageFinished() }
     }
 
     func webView(
@@ -93,27 +93,46 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        if store.budget == nil {
+        if store.budget == nil, store.phase == .signingIn {
             store.phase = .error(error.localizedDescription)
         }
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        if store.budget == nil {
+        if store.budget == nil, store.phase == .signingIn {
             store.phase = .error(error.localizedDescription)
         }
     }
 
-    // MARK: - Private
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "tokenrash" else { return }
+        if let body = message.body as? String {
+            ingest(body, source: "message")
+        }
+    }
 
     private func setupWebView() {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         config.defaultWebpagePreferences.allowsContentJavaScript = true
-        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 480, height: 640), configuration: config)
+        config.userContentController.add(self, name: "tokenrash")
+        config.userContentController.addUserScript(WKUserScript(source: Self.snifferScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
         webView.customUserAgent = TokenrashConfig.safariUserAgent
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        keeperWindow = NSWindow(
+            contentRect: NSRect(x: -9000, y: -9000, width: 1024, height: 768),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        keeperWindow.isReleasedWhenClosed = false
+        keeperWindow.alphaValue = 1
+        keeperWindow.ignoresMouseEvents = true
+        keeperWindow.collectionBehavior = [.canJoinAllSpaces, .ignoresCycle]
+        keeperWindow.contentView = webView
+        keeperWindow.orderFrontRegardless()
     }
 
     private func refresh(interactive: Bool) async {
@@ -121,98 +140,121 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate {
             signIn()
             return
         }
-        if await fetchViaURLSession() { return }
-        if await fetchViaJavaScript() { return }
-        if store.budget == nil, store.phase != .signingIn {
-            store.phase = .signedOut
-        }
+        probing = false
+        webView.load(URLRequest(url: TokenrashConfig.meURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
     }
 
-    @discardableResult
-    private func fetchViaURLSession() async -> Bool {
-        await syncCookies()
-        var request = URLRequest(url: TokenrashConfig.meURL)
-        request.setValue(TokenrashConfig.safariUserAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("application/json,text/plain,*/*", forHTTPHeaderField: "Accept")
-        do {
-            let (data, response) = try await cookieSession.data(for: request)
-            guard let http = response as? HTTPURLResponse else { return false }
-            if http.statusCode == 401 || http.statusCode == 302 || http.statusCode == 303 {
-                return false
-            }
-            guard http.statusCode == 200 else { return false }
-            if looksLikeHTML(data) { return false }
-            let (budget, pretty) = try TokenBudgetParser.parse(data: data)
-            store.apply(budget: budget, rawJSON: pretty)
-            closeLogin()
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    @discardableResult
-    private func fetchViaJavaScript() async -> Bool {
-        guard webView.url?.host == TokenrashConfig.origin.host else { return false }
-        let script = """
-        const r = await fetch('/me', { credentials: 'include', headers: { 'Accept': 'application/json' } });
-        const t = await r.text();
-        return { status: r.status, body: t };
-        """
-        do {
-            let result: Any? = try await withCheckedThrowingContinuation { continuation in
-                webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { outcome in
-                    switch outcome {
-                    case .success(let value):
-                        continuation.resume(returning: value)
-                    case .failure(let error):
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-            guard let obj = result as? [String: Any],
-                  let status = (obj["status"] as? Int) ?? (obj["status"] as? Double).map(Int.init),
-                  let body = obj["body"] as? String,
-                  status == 200 else { return false }
-            let (budget, pretty) = try TokenBudgetParser.parse(text: body)
-            store.apply(budget: budget, rawJSON: pretty)
-            closeLogin()
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    private func harvestIfPossible() async {
-        await syncCookies()
-        if await fetchViaURLSession() { return }
-
-        let text = (try? await webView.evaluateJavaScript("document.body ? document.body.innerText : ''")) as? String
-        if let text {
-            if let parsed = try? TokenBudgetParser.parse(text: text) {
-                store.apply(budget: parsed.0, rawJSON: parsed.1)
-                closeLogin()
-                return
-            }
-        }
-        if let url = webView.url, url.host?.contains("accounts.google.com") == true {
+    private func pageFinished() async {
+        let host = webView.url?.host ?? ""
+        if host.contains("accounts.google.com") {
             store.phase = .signingIn
             showLoginWindow()
+            return
+        }
+        guard host == TokenrashConfig.origin.host else { return }
+
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        await harvestFromPageText()
+        if store.budget != nil { return }
+        await probeAPIPaths()
+    }
+
+    private func harvestFromPageText() async {
+        let script = """
+        (function() {
+          const pre = document.querySelector('pre');
+          if (pre && pre.innerText.trim().startsWith('{')) return pre.innerText;
+          return document.body ? document.body.innerText : '';
+        })()
+        """
+        let text: String = await withCheckedContinuation { continuation in
+            webView.evaluateJavaScript(script) { result, _ in
+                continuation.resume(returning: (result as? String) ?? "")
+            }
+        }
+        ingest(text, source: "dom")
+    }
+
+    private func probeAPIPaths() async {
+        guard !probing else { return }
+        probing = true
+        let script = """
+        const paths = [
+          '/api/me', '/api/users/me', '/api/user', '/api/usage', '/api/usage?period=today',
+          '/api/quota', '/api/budget', '/api/stats', '/api/v1/me', '/v1/me', '/me.json',
+          '/openapi.json', '/api/daily', '/api/tokens', '/api/account', '/api/profile'
+        ];
+        const out = [];
+        for (const p of paths) {
+          try {
+            const r = await fetch(p, { credentials: 'include', headers: { 'Accept': 'application/json' } });
+            const t = await r.text();
+            out.push({ path: p, status: r.status, body: t.slice(0, 120000) });
+          } catch (e) {
+            out.push({ path: p, status: 0, body: String(e) });
+          }
+        }
+        return out;
+        """
+        let result: Any? = await withCheckedContinuation { continuation in
+            webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { outcome in
+                switch outcome {
+                case .success(let value): continuation.resume(returning: value)
+                case .failure: continuation.resume(returning: nil)
+                }
+            }
+        }
+        guard let rows = result as? [Any] else { return }
+        for row in rows {
+            guard let dict = row as? [String: Any] else { continue }
+            let path = dict["path"] as? String ?? ""
+            let status = (dict["status"] as? Int) ?? (dict["status"] as? Double).map(Int.init) ?? 0
+            let body = dict["body"] as? String ?? ""
+            appendCapture(source: "probe \(path) \(status)", body: body)
+            if status == 200, !looksLikeHTML(body) {
+                ingest(body, source: path)
+                if store.budget != nil { return }
+            }
         }
     }
 
-    private func syncCookies() async {
-        let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
-            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { continuation.resume(returning: $0) }
-        }
-        for cookie in cookies {
-            HTTPCookieStorage.shared.setCookie(cookie)
+    private func ingest(_ raw: String, source: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        appendCapture(source: source, body: trimmed)
+        if looksLikeHTML(trimmed) { return }
+        // Daily history has spend/limit per day but is not "today".
+        if trimmed.contains("\"series\"") && !trimmed.contains("\"today\"") { return }
+        do {
+            let (budget, pretty) = try TokenBudgetParser.parse(text: trimmed)
+            store.apply(budget: budget, rawJSON: pretty)
+            try? pretty.write(to: dumpURL, atomically: true, encoding: .utf8)
+            closeLogin()
+            NSLog("[Tokenrash] budget from \(source): used=\(budget.used) limit=\(budget.limit)")
+        } catch {
+            try? trimmed.write(to: dumpURL, atomically: true, encoding: .utf8)
+            NSLog("[Tokenrash] parse miss from \(source): \(trimmed.prefix(160))")
         }
     }
 
-    private func looksLikeHTML(_ data: Data) -> Bool {
-        guard let prefix = String(data: data.prefix(80), encoding: .utf8)?.lowercased() else { return false }
-        return prefix.contains("<html") || prefix.contains("<!doctype") || prefix.contains("google accounts")
+    private func appendCapture(source: String, body: String) {
+        let line = "{\"source\":\(Self.jsonString(source)),\"n\":\(body.count),\"prefix\":\(Self.jsonString(String(body.prefix(300))))}\n"
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: captureURL.path) {
+                if let handle = try? FileHandle(forWritingTo: captureURL) {
+                    defer { try? handle.close() }
+                    _ = try? handle.seekToEnd()
+                    try? handle.write(contentsOf: data)
+                }
+            } else {
+                try? data.write(to: captureURL)
+            }
+        }
+    }
+
+    private func looksLikeHTML(_ text: String) -> Bool {
+        let prefix = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return prefix.hasPrefix("<!doctype") || prefix.hasPrefix("<html") || prefix.contains("<div id=\"root\"")
     }
 
     private func showLoginWindow() {
@@ -227,7 +269,8 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate {
             window.contentView = webView
             window.isReleasedWhenClosed = false
             let closer = LoginWindowCloser(onClose: { [weak self] in
-                if self?.store.budget == nil {
+                self?.parkWebView()
+                if self?.store.budget == nil, self?.store.phase == .signingIn {
                     self?.store.phase = .signedOut
                 }
             })
@@ -242,10 +285,59 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    private func parkWebView() {
+        webView.removeFromSuperview()
+        keeperWindow.contentView = webView
+        keeperWindow.orderFrontRegardless()
+    }
+
     private func closeLogin() {
         loginWindow?.orderOut(nil)
-        waitingForJSON = false
+        parkWebView()
+        probing = false
     }
+
+    private static func jsonString(_ value: String) -> String {
+        let data = try? JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed)
+        return String(data: data ?? Data("\"\"".utf8), encoding: .utf8) ?? "\"\""
+    }
+
+    private static let snifferScript = """
+    (function() {
+      if (window.__tokenrashSniff) return;
+      window.__tokenrashSniff = true;
+      const post = (url, text) => {
+        try {
+          const t = (text || '').trim();
+          if (!t) return;
+          if (!(t.startsWith('{') || t.startsWith('['))) return;
+          window.webkit.messageHandlers.tokenrash.postMessage(t);
+        } catch (e) {}
+      };
+      const origFetch = window.fetch;
+      window.fetch = async function(input, init) {
+        const res = await origFetch.apply(this, arguments);
+        try {
+          const clone = res.clone();
+          const text = await clone.text();
+          post(String(input && input.url ? input.url : input), text);
+        } catch (e) {}
+        return res;
+      };
+      const origOpen = XMLHttpRequest.prototype.open;
+      const origSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function(method, url) {
+        this.__tokenrashURL = url;
+        return origOpen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function() {
+        this.addEventListener('load', function() {
+          post(String(this.__tokenrashURL || ''), this.responseText || '');
+        });
+        return origSend.apply(this, arguments);
+      };
+    })();
+    """
 }
 
 private final class LoginWindowCloser: NSObject, NSWindowDelegate {

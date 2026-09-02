@@ -7,8 +7,30 @@ enum Palette {
     static let sand = Color(red: 0.93, green: 0.80, blue: 0.46)
     static let sandDeep = Color(red: 0.74, green: 0.48, blue: 0.18)
     static let ember = Color(red: 0.86, green: 0.28, blue: 0.16)
+    static let sage = Color(red: 0.52, green: 0.74, blue: 0.36)
     static let soot = Color(red: 0.06, green: 0.05, blue: 0.04)
     static let parchment = Color(red: 0.93, green: 0.88, blue: 0.76)
+
+    /// Champagne when plenty remains, ember when the glass is almost empty.
+    static func sand(remaining: Double) -> Color {
+        let t = min(1, max(0, remaining))
+        if t >= 0.5 {
+            return mix((0.93, 0.80, 0.46), (0.52, 0.74, 0.36), (t - 0.5) / 0.5)
+        }
+        if t >= 0.22 {
+            return mix((0.74, 0.48, 0.18), (0.93, 0.80, 0.46), (t - 0.22) / 0.28)
+        }
+        return mix((0.86, 0.28, 0.16), (0.74, 0.48, 0.18), t / 0.22)
+    }
+
+    private static func mix(_ a: (Double, Double, Double), _ b: (Double, Double, Double), _ t: Double) -> Color {
+        let u = min(1, max(0, t))
+        return Color(
+            red: a.0 + (b.0 - a.0) * u,
+            green: a.1 + (b.1 - a.1) * u,
+            blue: a.2 + (b.2 - a.2) * u
+        )
+    }
 }
 
 struct HourglassGeom {
@@ -82,15 +104,11 @@ struct Grain: Identifiable {
 
 struct HourglassView: View {
     var remainingFraction: Double
-    var usedTokens: Double
-    var limitTokens: Double
-    var caption: String
-    var plate: String
-    var isDemo: Bool
     var reduceMotion: Bool
 
     @State private var grains: [Grain] = []
     @State private var nextID = 0
+    @State private var canvasSize: CGSize = CGSize(width: 200, height: 300)
 
     var usedFraction: Double { 1 - remainingFraction }
 
@@ -98,11 +116,11 @@ struct HourglassView: View {
         TimelineView(.animation(minimumInterval: reduceMotion ? 1.0 : 1.0 / 40.0, paused: reduceMotion)) { timeline in
             Canvas { context, size in
                 let time = timeline.date.timeIntervalSinceReferenceDate
-                let glassRect = CGRect(x: size.width * 0.18, y: size.height * 0.11, width: size.width * 0.64, height: size.height * 0.62)
+                let glassRect = CGRect(x: size.width * 0.16, y: size.height * 0.07, width: size.width * 0.68, height: size.height * 0.86)
                 let geom = HourglassGeom(rect: glassRect)
-                let sandColor = sandTone(usedFraction)
+                let sandColor = Palette.sand(remaining: remainingFraction)
 
-                drawGlow(context: &context, size: size, used: usedFraction)
+                drawGlow(context: &context, size: size, remaining: remainingFraction)
                 drawCaps(context: &context, size: size, glass: glassRect, brassTop: true)
 
                 let outline = geom.outline()
@@ -170,33 +188,28 @@ struct HourglassView: View {
                 context.stroke(highlight, with: .color(.white.opacity(0.28)), lineWidth: 1.1)
 
                 drawCaps(context: &context, size: size, glass: glassRect, brassTop: false)
-                drawPlate(context: &context, size: size, plate: plate, caption: caption, demo: isDemo)
             }
             .onChange(of: timeline.date) { _, date in
                 guard !reduceMotion else { return }
-                stepGrains(date: date, size: CGSize(width: 280, height: 420))
+                stepGrains(date: date, size: canvasSize)
             }
         }
-        .frame(width: 280, height: 420)
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: CanvasSizeKey.self, value: geo.size)
+            }
+        )
+        .onPreferenceChange(CanvasSizeKey.self) { canvasSize = $0 }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func sandTone(_ used: Double) -> Color {
-        if used < 0.55 {
-            return Palette.sand
-        }
-        if used < 0.85 {
-            return Palette.sandDeep
-        }
-        return Palette.ember
-    }
-
-    private func drawGlow(context: inout GraphicsContext, size: CGSize, used: Double) {
-        let color = used > 0.9 ? Palette.ember : (used > 0.7 ? Palette.sandDeep : Palette.brass)
+    private func drawGlow(context: inout GraphicsContext, size: CGSize, remaining: Double) {
+        let color = Palette.sand(remaining: remaining)
         let rect = CGRect(x: size.width * 0.15, y: size.height * 0.12, width: size.width * 0.7, height: size.height * 0.6)
         context.fill(
             Path(ellipseIn: rect.insetBy(dx: 10, dy: 20)),
             with: .radialGradient(
-                Gradient(colors: [color.opacity(used > 0.85 ? 0.28 : 0.12), .clear]),
+                Gradient(colors: [color.opacity(remaining < 0.22 ? 0.32 : 0.14), .clear]),
                 center: CGPoint(x: rect.midX, y: rect.midY),
                 startRadius: 10,
                 endRadius: rect.width * 0.55
@@ -252,31 +265,15 @@ struct HourglassView: View {
         context.stroke(path, with: .color(Palette.brassDark.opacity(0.7)), lineWidth: 0.6)
     }
 
-    private func drawPlate(context: inout GraphicsContext, size: CGSize, plate: String, caption: String, demo: Bool) {
-        let plateRect = CGRect(x: size.width * 0.14, y: size.height * 0.78, width: size.width * 0.72, height: 68)
-        fillBrass(context: &context, rect: plateRect, radius: 8)
-        let inner = plateRect.insetBy(dx: 6, dy: 6)
-        context.fill(Path(roundedRect: inner, cornerRadius: 5), with: .color(Palette.brassDark.opacity(0.35)))
-
-        let plateText = Text(plate)
-            .font(.custom("Bodoni 72", size: 34))
-            .foregroundColor(Palette.parchment)
-        let capText = Text(demo ? "demo sand · sign in" : caption)
-            .font(.system(size: 11, weight: .medium, design: .serif))
-            .foregroundColor(Palette.parchment.opacity(0.78))
-        context.draw(plateText, at: CGPoint(x: plateRect.midX, y: plateRect.midY - 8))
-        context.draw(capText, at: CGPoint(x: plateRect.midX, y: plateRect.maxY - 16))
-    }
-
     private func stepGrains(date: Date, size: CGSize) {
-        let glassRect = CGRect(x: size.width * 0.18, y: size.height * 0.11, width: size.width * 0.64, height: size.height * 0.62)
+        let glassRect = CGRect(x: size.width * 0.16, y: size.height * 0.07, width: size.width * 0.68, height: size.height * 0.86)
         let geom = HourglassGeom(rect: glassRect)
         let dt: CGFloat = 1.0 / 40.0
         let bottomFull = geom.bottomY - geom.neckY - 10
         let bottomSand = max(usedFraction > 0.01 ? 8 : 0, bottomFull * usedFraction)
         let bottomTop = geom.bottomY - bottomSand
 
-        if remainingFraction > 0.015, remainingFraction < 0.995, grains.count < 90 {
+        if remainingFraction > 0.015, remainingFraction < 0.995, grains.count < max(24, Int(size.width / 4)) {
             let spawn = remainingFraction < 0.2 ? 2 : 1
             for _ in 0..<spawn {
                 grains.append(Grain(
@@ -319,5 +316,13 @@ private struct Seeded {
         z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
         z = z ^ (z >> 31)
         return Double(z % 10_000) / 10_000
+    }
+}
+
+private struct CanvasSizeKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        if next.width > 0 { value = next }
     }
 }
