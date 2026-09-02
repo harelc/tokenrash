@@ -73,6 +73,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay.orderFrontRegardless()
 
         iap.start()
+        store.alarms.onTrip = { [weak self] in
+            self?.overlay.orderFrontRegardless()
+        }
         AppInstall.applyPendingLaunchAtLogin()
         badgeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.syncBadge() }
@@ -89,6 +92,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let clickThrough = menu.addItem(withTitle: "Click through", action: #selector(toggleClickThrough), keyEquivalent: "")
         clickThrough.state = overlay.ignoresMouseEvents ? .on : .off
         menu.addItem(withTitle: "Reset size", action: #selector(resetSize), keyEquivalent: "")
+        let preview = NSMenu()
+        preview.addItem(withTitle: "10% left — bell", action: #selector(previewTen), keyEquivalent: "")
+        preview.addItem(withTitle: "5% left — bells", action: #selector(previewFive), keyEquivalent: "")
+        preview.addItem(withTitle: "1% left — siren", action: #selector(previewSiren), keyEquivalent: "")
+        preview.addItem(.separator())
+        preview.addItem(withTitle: "Play all", action: #selector(previewAllWarnings), keyEquivalent: "")
+        for item in preview.items { item.target = self }
+        let previewItem = NSMenuItem(title: "Preview warnings", action: nil, keyEquivalent: "")
+        previewItem.submenu = preview
+        menu.addItem(previewItem)
         menu.addItem(.separator())
         if !AppInstall.isInApplications {
             menu.addItem(withTitle: "Install to Applications…", action: #selector(installToApplications), keyEquivalent: "")
@@ -117,6 +130,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func inspect() {
         iap.inspectPayload()
+    }
+
+    @objc private func previewTen() {
+        overlay.orderFrontRegardless()
+        store.previewWarning(TokenrashConfig.alarmSteps[0])
+    }
+
+    @objc private func previewFive() {
+        overlay.orderFrontRegardless()
+        store.previewWarning(TokenrashConfig.alarmSteps[1])
+    }
+
+    @objc private func previewSiren() {
+        overlay.orderFrontRegardless()
+        store.previewWarning(TokenrashConfig.alarmSteps[2])
+    }
+
+    @objc private func previewAllWarnings() {
+        overlay.orderFrontRegardless()
+        store.previewAllWarnings()
     }
 
     @objc private func toggleClickThrough() {
@@ -193,7 +226,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let budget = store.budget {
             statusItem.button?.title = TokenFormat.usd(budget.remaining)
             statusItem.button?.toolTip = "\(TokenFormat.usd(budget.remaining)) left out of \(TokenFormat.usd(budget.limit)) today"
-            statusItem.button?.contentTintColor = budget.isCritical ? NSColor.systemRed : nil
+            if store.isSiren {
+                let on = Int(Date().timeIntervalSince1970 * 2) % 2 == 0
+                statusItem.button?.contentTintColor = on ? NSColor.systemRed : nil
+            } else {
+                statusItem.button?.contentTintColor = budget.isCritical ? NSColor.systemRed : nil
+            }
         } else {
             statusItem.button?.title = ""
             statusItem.button?.toolTip = "Tokenrash — sign in to load daily budget"

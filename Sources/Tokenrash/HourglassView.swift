@@ -105,6 +105,7 @@ struct Grain: Identifiable {
 struct HourglassView: View {
     var remainingFraction: Double
     var reduceMotion: Bool
+    var siren: Bool = false
 
     @State private var grains: [Grain] = []
     @State private var nextID = 0
@@ -118,9 +119,12 @@ struct HourglassView: View {
                 let time = timeline.date.timeIntervalSinceReferenceDate
                 let glassRect = CGRect(x: size.width * 0.16, y: size.height * 0.07, width: size.width * 0.68, height: size.height * 0.86)
                 let geom = HourglassGeom(rect: glassRect)
-                let sandColor = Palette.sand(remaining: remainingFraction)
+                let pulse = sirenPulse(time: time)
+                let sandColor = siren
+                    ? Color(red: 0.95, green: 0.08 + 0.18 * (1 - pulse), blue: 0.06)
+                    : Palette.sand(remaining: remainingFraction)
 
-                drawGlow(context: &context, size: size, remaining: remainingFraction)
+                drawGlow(context: &context, size: size, remaining: remainingFraction, sirenPulse: pulse)
                 drawCaps(context: &context, size: size, glass: glassRect, brassTop: true)
 
                 let outline = geom.outline()
@@ -169,15 +173,26 @@ struct HourglassView: View {
                     inner.fill(tick, with: .color(sandColor))
                 }
 
+                if siren {
+                    inner.fill(outline, with: .color(Color.red.opacity(0.12 + 0.38 * pulse)))
+                }
+
                 context.stroke(outline, with: .linearGradient(
-                    Gradient(colors: [
-                        Color.white.opacity(0.55),
-                        Palette.brassLite.opacity(0.35),
-                        Color.white.opacity(0.12)
-                    ]),
+                    Gradient(colors: siren
+                        ? [
+                            Color.red.opacity(0.35 + 0.55 * pulse),
+                            Color(red: 1, green: 0.2, blue: 0.1).opacity(0.8),
+                            Color.red.opacity(0.2 + 0.5 * pulse)
+                        ]
+                        : [
+                            Color.white.opacity(0.55),
+                            Palette.brassLite.opacity(0.35),
+                            Color.white.opacity(0.12)
+                        ]
+                    ),
                     startPoint: CGPoint(x: glassRect.minX, y: glassRect.minY),
                     endPoint: CGPoint(x: glassRect.maxX, y: glassRect.maxY)
-                ), lineWidth: 1.6)
+                ), lineWidth: siren ? 2.4 : 1.6)
 
                 var highlight = Path()
                 highlight.move(to: CGPoint(x: geom.cx - geom.halfWidth(atY: glassRect.minY + 18) + 6, y: glassRect.minY + 16))
@@ -203,13 +218,21 @@ struct HourglassView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func drawGlow(context: inout GraphicsContext, size: CGSize, remaining: Double) {
-        let color = Palette.sand(remaining: remaining)
+    private func sirenPulse(time: TimeInterval) -> Double {
+        guard siren else { return 0 }
+        let speed = reduceMotion ? 2.2 : 8.0
+        return 0.5 + 0.5 * sin(time * speed)
+    }
+
+    private func drawGlow(context: inout GraphicsContext, size: CGSize, remaining: Double, sirenPulse: Double) {
+        let color = siren
+            ? Color.red.opacity(0.2 + 0.55 * sirenPulse)
+            : Palette.sand(remaining: remaining).opacity(remaining < 0.22 ? 0.32 : 0.14)
         let rect = CGRect(x: size.width * 0.15, y: size.height * 0.12, width: size.width * 0.7, height: size.height * 0.6)
         context.fill(
             Path(ellipseIn: rect.insetBy(dx: 10, dy: 20)),
             with: .radialGradient(
-                Gradient(colors: [color.opacity(remaining < 0.22 ? 0.32 : 0.14), .clear]),
+                Gradient(colors: [color, .clear]),
                 center: CGPoint(x: rect.midX, y: rect.midY),
                 startRadius: 10,
                 endRadius: rect.width * 0.55

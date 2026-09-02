@@ -9,16 +9,16 @@ struct OverlayView: View {
     private let design = CGSize(width: 200, height: 300)
 
     var body: some View {
-        let budget = store.budget
-        let remaining = budget?.remainingFraction ?? 0.62
-        let plate = budget.map { TokenFormat.usd($0.remaining) } ?? "—"
+        let remaining = store.remainingFraction
+        let plate = store.budget.map { TokenFormat.usd($0.remaining) } ?? "—"
 
         GeometryReader { geo in
             let scale = min(geo.size.width / design.width, geo.size.height / design.height)
             VStack(spacing: 0) {
                 HourglassView(
                     remainingFraction: remaining,
-                    reduceMotion: reduceMotion
+                    reduceMotion: reduceMotion,
+                    siren: store.isSiren
                 )
                 .frame(width: design.width, height: 248)
 
