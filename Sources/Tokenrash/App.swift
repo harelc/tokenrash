@@ -11,7 +11,7 @@ struct TokenrashApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let store = BudgetStore()
     var iap: IAPSession!
     var statusItem: NSStatusItem!
@@ -26,9 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "hourglass", accessibilityDescription: "Tokenrash")
         statusItem.button?.imagePosition = .imageLeft
-        statusItem.button?.target = self
-        statusItem.button?.action = #selector(statusClicked)
-        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        let menu = NSMenu()
+        menu.delegate = self
+        statusItem.menu = menu
 
         let root = OverlayView(onSignIn: { [weak self] in self?.iap.signIn() })
             .environment(store)
@@ -73,27 +73,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.orderFrontRegardless()
 
         iap.start()
+        AppInstall.applyPendingLaunchAtLogin()
         badgeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.syncBadge() }
         }
         syncBadge()
     }
 
-    @objc private func statusClicked() {
-        if NSApp.currentEvent?.type == .rightMouseUp {
-            showMenu()
-            return
-        }
-        if overlay.isVisible {
-            overlay.orderOut(nil)
-        } else {
-            overlay.orderFrontRegardless()
-        }
-    }
-
-    private func showMenu() {
-        let menu = NSMenu()
-        menu.addItem(withTitle: overlay.isVisible ? "Hide sandclock" : "Show sandclock", action: #selector(toggleOverlay), keyEquivalent: "")
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        menu.addItem(withTitle: overlay.isVisible ? "Hide widget" : "Show widget", action: #selector(toggleOverlay), keyEquivalent: "")
         menu.addItem(withTitle: store.budget == nil ? "Sign in…" : "Refresh now", action: #selector(signInOrRefresh), keyEquivalent: "")
         menu.addItem(withTitle: "Inspect /me payload", action: #selector(inspect), keyEquivalent: "")
         menu.addItem(.separator())
@@ -101,14 +90,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clickThrough.state = overlay.ignoresMouseEvents ? .on : .off
         menu.addItem(withTitle: "Reset size", action: #selector(resetSize), keyEquivalent: "")
         menu.addItem(.separator())
+        if !AppInstall.isInApplications {
+            menu.addItem(withTitle: "Install to Applications…", action: #selector(installToApplications), keyEquivalent: "")
+        }
+        let login = menu.addItem(withTitle: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        login.state = AppInstall.launchesAtLogin ? .on : .off
+        menu.addItem(.separator())
         if store.budget != nil {
             menu.addItem(withTitle: "Sign out", action: #selector(signOut), keyEquivalent: "")
         }
         menu.addItem(withTitle: "Quit Tokenrash", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }
-        statusItem.menu = menu
-        statusItem.button?.performClick(nil)
-        statusItem.menu = nil
     }
 
     @objc private func toggleOverlay() {
@@ -132,6 +124,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if overlay.ignoresMouseEvents {
             overlay.orderFrontRegardless()
         }
+    }
+
+    @objc private func installToApplications() {
+        do {
+            try AppInstall.installAndRelaunch(enableLogin: false)
+        } catch {
+            presentInstallError(error)
+        }
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        do {
+            if AppInstall.isInApplications {
+                try AppInstall.setLaunchesAtLogin(!AppInstall.launchesAtLogin)
+                return
+            }
+            if AppInstall.launchesAtLogin {
+                try AppInstall.setLaunchesAtLogin(false)
+                return
+            }
+            try AppInstall.installAndRelaunch(enableLogin: true)
+        } catch {
+            presentInstallError(error)
+        }
+    }
+
+    private func presentInstallError(_ error: Error) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert(error: error)
+        alert.messageText = "Could not install Tokenrash"
+        alert.runModal()
     }
 
     @objc private func signOut() {
