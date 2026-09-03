@@ -121,9 +121,12 @@ private struct SplitFlapCell: View {
         incoming = newValue
         foldTop = false
         dropBottom = false
+        let variant = UInt64((delay * 1000).rounded()) &+ UInt64(newValue.unicodeScalars.first?.value ?? 0)
+        FlapAudio.tick(variant: variant)
         withAnimation(.easeIn(duration: 0.13)) { foldTop = true }
         try? await Task.sleep(nanoseconds: 130_000_000)
         guard !Task.isCancelled else { return }
+        FlapAudio.clack(variant: variant &+ 17)
         withAnimation(.easeOut(duration: 0.13)) { dropBottom = true }
         try? await Task.sleep(nanoseconds: 130_000_000)
         guard !Task.isCancelled else { return }

@@ -10,7 +10,7 @@ struct OverlayView: View {
 
     var body: some View {
         let remaining = store.remainingFraction
-        let plate = store.budget.map { TokenFormat.usd($0.remaining) } ?? "—"
+        let plate = store.previewPlate ?? store.budget.map { TokenFormat.usd($0.remaining) } ?? "—"
 
         GeometryReader { geo in
             let scale = min(geo.size.width / design.width, geo.size.height / design.height)

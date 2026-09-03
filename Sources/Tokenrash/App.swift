@@ -96,6 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         preview.addItem(withTitle: "10% left — bell", action: #selector(previewTen), keyEquivalent: "")
         preview.addItem(withTitle: "5% left — bells", action: #selector(previewFive), keyEquivalent: "")
         preview.addItem(withTitle: "1% left — siren", action: #selector(previewSiren), keyEquivalent: "")
+        preview.addItem(withTitle: "Counter flap", action: #selector(previewFlap), keyEquivalent: "")
         preview.addItem(.separator())
         preview.addItem(withTitle: "Play all", action: #selector(previewAllWarnings), keyEquivalent: "")
         for item in preview.items { item.target = self }
@@ -145,6 +146,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func previewSiren() {
         overlay.orderFrontRegardless()
         store.previewWarning(TokenrashConfig.alarmSteps[2])
+    }
+
+    @objc private func previewFlap() {
+        overlay.orderFrontRegardless()
+        store.previewFlap()
     }
 
     @objc private func previewAllWarnings() {
