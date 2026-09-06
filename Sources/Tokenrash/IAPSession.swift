@@ -10,7 +10,6 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
     private var keeperWindow: NSWindow!
     private var loginDelegate: LoginWindowCloser?
     private var pollTimer: Timer?
-    private var probing = false
     private let dumpURL = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("Library/Logs/Tokenrash-last-me.json")
     private let captureURL = URL(fileURLWithPath: NSHomeDirectory())
@@ -26,7 +25,7 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         Task { await refresh(interactive: false) }
         pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: TokenrashConfig.pollInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [self] in
                 await self?.refresh(interactive: false)
             }
         }
@@ -34,7 +33,6 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
 
     func signIn() {
         store.phase = .signingIn
-        probing = false
         webView.load(URLRequest(url: TokenrashConfig.meURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
     }
 
@@ -121,6 +119,13 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "tokenrash" else { return }
+        if let dict = message.body as? [String: Any] {
+            let url = dict["url"] as? String ?? ""
+            let body = dict["body"] as? String ?? ""
+            guard isMeJSONURL(url) else { return }
+            ingest(body, source: "sniff \(url)")
+            return
+        }
         if let body = message.body as? String {
             ingest(body, source: "message")
         }
@@ -181,7 +186,10 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
             signIn()
             return
         }
-        probing = false
+        if webView.url?.host == TokenrashConfig.origin.host {
+            await fetchMeJSON()
+            if store.budget != nil { return }
+        }
         webView.load(URLRequest(url: TokenrashConfig.meURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
     }
 
@@ -193,11 +201,35 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
             return
         }
         guard host == TokenrashConfig.origin.host else { return }
-
-        try? await Task.sleep(nanoseconds: 1_200_000_000)
-        await harvestFromPageText()
+        await fetchMeJSON()
         if store.budget != nil { return }
-        await probeAPIPaths()
+        await harvestFromPageText()
+    }
+
+    /// Personal card at `GET /me` (`Accept: application/json`). Not `/tree`.
+    private func fetchMeJSON() async {
+        let script = """
+        const r = await fetch('/me', {
+          credentials: 'include',
+          cache: 'no-store',
+          headers: { 'Accept': 'application/json' }
+        });
+        return { status: r.status, body: await r.text() };
+        """
+        let result: Any? = await withCheckedContinuation { continuation in
+            webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { outcome in
+                switch outcome {
+                case .success(let value): continuation.resume(returning: value)
+                case .failure: continuation.resume(returning: nil)
+                }
+            }
+        }
+        guard let dict = result as? [String: Any] else { return }
+        let status = (dict["status"] as? Int) ?? (dict["status"] as? Double).map(Int.init) ?? 0
+        let body = dict["body"] as? String ?? ""
+        appendCapture(source: "GET /me \(status)", body: body)
+        guard status == 200 else { return }
+        ingest(body, source: "GET /me")
     }
 
     private func harvestFromPageText() async {
@@ -213,50 +245,8 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
                 continuation.resume(returning: (result as? String) ?? "")
             }
         }
+        if let path = webView.url?.path, !isMeJSONURL(path) { return }
         ingest(text, source: "dom")
-    }
-
-    private func probeAPIPaths() async {
-        guard !probing else { return }
-        probing = true
-        let script = """
-        const paths = [
-          '/api/me', '/api/users/me', '/api/user', '/api/usage', '/api/usage?period=today',
-          '/api/quota', '/api/budget', '/api/stats', '/api/v1/me', '/v1/me', '/me.json',
-          '/openapi.json', '/api/daily', '/api/tokens', '/api/account', '/api/profile'
-        ];
-        const out = [];
-        for (const p of paths) {
-          try {
-            const r = await fetch(p, { credentials: 'include', headers: { 'Accept': 'application/json' } });
-            const t = await r.text();
-            out.push({ path: p, status: r.status, body: t.slice(0, 120000) });
-          } catch (e) {
-            out.push({ path: p, status: 0, body: String(e) });
-          }
-        }
-        return out;
-        """
-        let result: Any? = await withCheckedContinuation { continuation in
-            webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { outcome in
-                switch outcome {
-                case .success(let value): continuation.resume(returning: value)
-                case .failure: continuation.resume(returning: nil)
-                }
-            }
-        }
-        guard let rows = result as? [Any] else { return }
-        for row in rows {
-            guard let dict = row as? [String: Any] else { continue }
-            let path = dict["path"] as? String ?? ""
-            let status = (dict["status"] as? Int) ?? (dict["status"] as? Double).map(Int.init) ?? 0
-            let body = dict["body"] as? String ?? ""
-            appendCapture(source: "probe \(path) \(status)", body: body)
-            if status == 200, !looksLikeHTML(body) {
-                ingest(body, source: path)
-                if store.budget != nil { return }
-            }
-        }
     }
 
     private func ingest(_ raw: String, source: String) {
@@ -264,8 +254,8 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         guard !trimmed.isEmpty else { return }
         appendCapture(source: source, body: trimmed)
         if looksLikeHTML(trimmed) { return }
-        // Daily history has spend/limit per day but is not "today".
-        if trimmed.contains("\"series\"") && !trimmed.contains("\"today\"") { return }
+        if looksLikeOrgGraph(trimmed) { return }
+        if trimmed.contains("\"series\"") && !trimmed.contains("\"spend_usd\"") { return }
         do {
             let (budget, pretty) = try TokenBudgetParser.parse(text: trimmed)
             store.apply(budget: budget, rawJSON: pretty)
@@ -296,6 +286,24 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
     private func looksLikeHTML(_ text: String) -> Bool {
         let prefix = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return prefix.hasPrefix("<!doctype") || prefix.hasPrefix("<html") || prefix.contains("<div id=\"root\"")
+    }
+
+    /// Personal JSON is `GET /me`. Admin SPA also fetches `/tree`; never apply that.
+    private func isMeJSONURL(_ url: String) -> Bool {
+        let path = url.split(separator: "?").first.map(String.init) ?? url
+        let lower = path.lowercased()
+        if lower.contains("/tree") { return false }
+        return lower.hasSuffix("/me") || lower.hasSuffix("/me.json") || lower == "/me" || lower == "me"
+    }
+
+    /// `/tree` org dump: `{ nodes, personas }` — even if people have nested spend fields.
+    private func looksLikeOrgGraph(_ text: String) -> Bool {
+        guard let data = text.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return text.contains("\"nodes\"")
+        }
+        if root["nodes"] != nil { return true }
+        return root["personas"] != nil && root["today"] == nil
     }
 
     private func showLoginWindow() {
@@ -361,7 +369,6 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
     private func closeLogin() {
         loginWindow?.orderOut(nil)
         parkWebView()
-        probing = false
     }
 
     private static func jsonString(_ value: String) -> String {
@@ -378,7 +385,11 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
           const t = (text || '').trim();
           if (!t) return;
           if (!(t.startsWith('{') || t.startsWith('['))) return;
-          window.webkit.messageHandlers.tokenrash.postMessage(t);
+          const href = String(url || '');
+          const path = href.split('?')[0].toLowerCase();
+          if (path.includes('/tree')) return;
+          if (!(path.endsWith('/me') || path.endsWith('/me.json') || path === '/me' || path === 'me')) return;
+          window.webkit.messageHandlers.tokenrash.postMessage({ url: href, body: t });
         } catch (e) {}
       };
       const origFetch = window.fetch;

@@ -1,6 +1,18 @@
 import AppKit
 import Foundation
 
+enum SoundSettings {
+    private static let key = "sounds.enabled"
+
+    static var enabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: key) == nil { return true }
+            return UserDefaults.standard.bool(forKey: key)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
+    }
+}
+
 @MainActor
 final class BudgetAlarms {
     var onTrip: (() -> Void)?
@@ -49,6 +61,7 @@ enum AlarmAudio {
     private static var followUp: DispatchWorkItem?
 
     static func play(_ sound: TokenrashConfig.AlarmSound) {
+        guard SoundSettings.enabled else { return }
         followUp?.cancel()
         switch sound {
         case .bell:
@@ -110,6 +123,7 @@ enum FlapAudio {
     }
 
     private static func play(wav: Data, volume: Float, keep: TimeInterval) {
+        guard SoundSettings.enabled else { return }
         guard let sound = NSSound(data: wav) else { return }
         sound.volume = volume
         playing.append(sound)

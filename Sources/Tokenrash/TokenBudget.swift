@@ -66,16 +66,11 @@ enum TokenBudgetParser {
     }
 
     private static func extract(from object: Any) -> TokenBudget? {
-        if let tokendash = tokendashToday(from: object) {
-            return tokendash
-        }
-        if let sameDict = bestSameDict(in: object) {
-            return sameDict
-        }
-        return pairedAcrossTree(object)
+        tokendashToday(from: object)
     }
 
-    /// `{ today: { spend_usd, effective_limit_usd, standing_limit_usd } }` — spend is used, not remaining.
+    /// Personal `/me` card: `{ email, today: { spend_usd, effective_limit_usd, standing_limit_usd } }`.
+    /// Spend is used, not remaining. Org-wide `{ nodes, personas }` graphs have no root `today` and are ignored.
     private static func tokendashToday(from object: Any) -> TokenBudget? {
         guard let root = object as? [String: Any],
               let today = root["today"] as? [String: Any] else { return nil }
@@ -84,10 +79,12 @@ enum TokenBudgetParser {
             ?? number(today["standing_limit_usd"])
             ?? number(today["limit_usd"])
         guard let used, let limit, limit > 0 else { return nil }
+        let email = (root["email"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? firstEmail(in: object)
         return TokenBudget(
             used: used,
             limit: limit,
-            email: firstEmail(in: object),
+            email: email,
             resetsAt: firstDate(in: today) ?? firstDate(in: object),
             label: "today"
         )

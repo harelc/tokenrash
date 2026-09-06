@@ -78,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         AppInstall.applyPendingLaunchAtLogin()
         badgeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.syncBadge() }
+            Task { @MainActor [self] in self?.syncBadge() }
         }
         syncBadge()
     }
@@ -91,6 +91,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         let clickThrough = menu.addItem(withTitle: "Click through", action: #selector(toggleClickThrough), keyEquivalent: "")
         clickThrough.state = overlay.ignoresMouseEvents ? .on : .off
+        let sounds = menu.addItem(withTitle: "Sound effects", action: #selector(toggleSounds), keyEquivalent: "")
+        sounds.state = SoundSettings.enabled ? .on : .off
         menu.addItem(withTitle: "Reset size", action: #selector(resetSize), keyEquivalent: "")
         let preview = NSMenu()
         preview.addItem(withTitle: "10% left — bell", action: #selector(previewTen), keyEquivalent: "")
@@ -163,6 +165,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if overlay.ignoresMouseEvents {
             overlay.orderFrontRegardless()
         }
+    }
+
+    @objc private func toggleSounds() {
+        SoundSettings.enabled.toggle()
     }
 
     @objc private func installToApplications() {
