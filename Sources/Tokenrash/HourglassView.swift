@@ -106,6 +106,10 @@ struct HourglassView: View {
     var remainingFraction: Double
     var reduceMotion: Bool
     var siren: Bool = false
+    /// Frozen frame for Dock snapshots — no TimelineView or falling grains.
+    var animate: Bool = true
+    /// Used when `animate` is false so the siren can still pulse on redraws.
+    var clock: TimeInterval = 0
 
     @State private var grains: [Grain] = []
     @State private var nextID = 0
@@ -114,9 +118,30 @@ struct HourglassView: View {
     var usedFraction: Double { 1 - remainingFraction }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: reduceMotion ? 1.0 : 1.0 / 40.0, paused: reduceMotion)) { timeline in
-            Canvas { context, size in
-                let time = timeline.date.timeIntervalSinceReferenceDate
+        Group {
+            if animate {
+                TimelineView(.animation(minimumInterval: reduceMotion ? 1.0 : 1.0 / 40.0, paused: reduceMotion)) { timeline in
+                    hourglassCanvas(time: timeline.date.timeIntervalSinceReferenceDate)
+                        .onChange(of: timeline.date) { _, date in
+                            guard !reduceMotion else { return }
+                            stepGrains(date: date, size: canvasSize)
+                        }
+                }
+            } else {
+                hourglassCanvas(time: clock)
+            }
+        }
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: CanvasSizeKey.self, value: geo.size)
+            }
+        )
+        .onPreferenceChange(CanvasSizeKey.self) { canvasSize = $0 }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func hourglassCanvas(time: TimeInterval) -> some View {
+        Canvas { context, size in
                 let glassRect = CGRect(x: size.width * 0.16, y: size.height * 0.07, width: size.width * 0.68, height: size.height * 0.86)
                 let geom = HourglassGeom(rect: glassRect)
                 let pulse = sirenPulse(time: time)
@@ -166,11 +191,13 @@ struct HourglassView: View {
                     inner.stroke(stream, with: .color(sandColor.opacity(0.55)), lineWidth: 2.2)
                 }
 
-                for grain in grains {
-                    var tick = Path(roundedRect: CGRect(x: -grain.length * 0.2, y: -grain.length, width: grain.length * 0.4, height: grain.length), cornerRadius: 0.6)
-                    tick = tick.applying(CGAffineTransform(rotationAngle: grain.rotation))
-                    tick = tick.applying(CGAffineTransform(translationX: grain.x, y: grain.y))
-                    inner.fill(tick, with: .color(sandColor))
+                if animate {
+                    for grain in grains {
+                        var tick = Path(roundedRect: CGRect(x: -grain.length * 0.2, y: -grain.length, width: grain.length * 0.4, height: grain.length), cornerRadius: 0.6)
+                        tick = tick.applying(CGAffineTransform(rotationAngle: grain.rotation))
+                        tick = tick.applying(CGAffineTransform(translationX: grain.x, y: grain.y))
+                        inner.fill(tick, with: .color(sandColor))
+                    }
                 }
 
                 if siren {
@@ -204,18 +231,6 @@ struct HourglassView: View {
 
                 drawCaps(context: &context, size: size, glass: glassRect, brassTop: false)
             }
-            .onChange(of: timeline.date) { _, date in
-                guard !reduceMotion else { return }
-                stepGrains(date: date, size: canvasSize)
-            }
-        }
-        .background(
-            GeometryReader { geo in
-                Color.clear.preference(key: CanvasSizeKey.self, value: geo.size)
-            }
-        )
-        .onPreferenceChange(CanvasSizeKey.self) { canvasSize = $0 }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func sirenPulse(time: TimeInterval) -> Double {

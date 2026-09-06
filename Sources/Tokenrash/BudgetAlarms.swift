@@ -13,6 +13,15 @@ enum SoundSettings {
     }
 }
 
+enum DockSettings {
+    private static let key = "dock.enabled"
+
+    static var enabled: Bool {
+        get { UserDefaults.standard.bool(forKey: key) }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
+    }
+}
+
 @MainActor
 final class BudgetAlarms {
     var onTrip: (() -> Void)?

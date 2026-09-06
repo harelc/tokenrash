@@ -340,6 +340,11 @@ enum TokenFormat {
         return formatter.string(from: NSNumber(value: value)) ?? String(format: "$%.2f", value)
     }
 
+    /// Short remaining amount for `NSDockTile.badgeLabel`.
+    static func dockBadge(_ value: Double) -> String {
+        String(format: "$%.0f", max(0, value).rounded())
+    }
+
     static func tokens(_ value: Double) -> String { usd(value) }
 
     static func percent(_ fraction: Double) -> String {

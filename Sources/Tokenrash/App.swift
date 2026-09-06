@@ -18,9 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var overlay: OverlayPanel!
     private var hosting: NSHostingView<AnyView>!
     private var badgeTimer: Timer?
+    private var lastDockKey: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(DockSettings.enabled ? .regular : .accessory)
         iap = IAPSession(store: store)
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -83,6 +84,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         syncBadge()
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        overlay.orderFrontRegardless()
+        return false
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         menu.addItem(withTitle: overlay.isVisible ? "Hide widget" : "Show widget", action: #selector(toggleOverlay), keyEquivalent: "")
@@ -93,6 +99,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         clickThrough.state = overlay.ignoresMouseEvents ? .on : .off
         let sounds = menu.addItem(withTitle: "Sound effects", action: #selector(toggleSounds), keyEquivalent: "")
         sounds.state = SoundSettings.enabled ? .on : .off
+        let dock = menu.addItem(withTitle: "Show in Dock", action: #selector(toggleDock), keyEquivalent: "")
+        dock.state = DockSettings.enabled ? .on : .off
         menu.addItem(withTitle: "Reset size", action: #selector(resetSize), keyEquivalent: "")
         let preview = NSMenu()
         preview.addItem(withTitle: "10% left — bell", action: #selector(previewTen), keyEquivalent: "")
@@ -169,6 +177,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleSounds() {
         SoundSettings.enabled.toggle()
+    }
+
+    @objc private func toggleDock() {
+        DockSettings.enabled.toggle()
+        applyDockVisibility()
     }
 
     @objc private func installToApplications() {
@@ -250,6 +263,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             statusItem.button?.contentTintColor = nil
         }
         UserDefaults.standard.set(NSStringFromRect(overlay.frame), forKey: "overlay.frame.v2")
+        syncDockIcon()
+    }
+
+    private func applyDockVisibility() {
+        lastDockKey = nil
+        if DockSettings.enabled {
+            NSApp.setActivationPolicy(.regular)
+            syncDockIcon()
+        } else {
+            DockIcon.restore()
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    private func syncDockIcon() {
+        guard DockSettings.enabled else { return }
+        let remaining = store.remainingFraction
+        let siren = store.isSiren
+        let flash = siren && Int(Date().timeIntervalSince1970 * 2) % 2 == 0
+        let badge = store.budget.map { TokenFormat.dockBadge($0.remaining) }
+        let key = "\(Int((remaining * 1000).rounded()))-\(flash)-\(badge ?? "")"
+        guard key != lastDockKey else { return }
+        lastDockKey = key
+        DockIcon.apply(remaining: remaining, siren: flash, badge: badge)
     }
 }
 
