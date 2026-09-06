@@ -5,6 +5,7 @@ import AppKit
 final class ResizeHandleView: NSView {
     static let minWidth: CGFloat = 150
     static let maxWidth: CGFloat = 420
+    /// Instrument: glass tucked into brass yokes that hold the flap boards.
     static let aspect: CGFloat = 1.5
 
     override init(frame frameRect: NSRect) {

@@ -234,8 +234,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func positionOverlay() {
         if let saved = UserDefaults.standard.string(forKey: "overlay.frame.v2") {
-            let rect = NSRectFromString(saved)
+            var rect = NSRectFromString(saved)
             if rect.width > 40, NSScreen.screens.contains(where: { $0.visibleFrame.intersects(rect) }) {
+                let top = rect.maxY
+                rect.size.height = rect.width * ResizeHandleView.aspect
+                rect.origin.y = top - rect.size.height
                 overlay.setFrame(rect, display: true)
                 return
             }

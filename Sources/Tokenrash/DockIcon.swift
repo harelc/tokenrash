@@ -111,6 +111,7 @@ private struct DockHourglassIcon: View {
                 remainingFraction: remaining,
                 reduceMotion: true,
                 siren: siren,
+                chrome: .icon,
                 animate: false,
                 clock: clock
             )

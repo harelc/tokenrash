@@ -1,5 +1,36 @@
 import SwiftUI
 
+enum HourglassChrome {
+    /// Overlay: glass tucked into brass yokes that hold the flap boards.
+    case instrument
+    /// Dock tile: glass with small collars, no yokes.
+    case icon
+
+    static let design = CGSize(width: 200, height: 300)
+    static let yoke: CGFloat = 48
+
+    static func glassRect(in size: CGSize, chrome: HourglassChrome) -> CGRect {
+        switch chrome {
+        case .instrument:
+            let yoke = size.height * (Self.yoke / design.height)
+            let overlap = size.height * (11 / design.height)
+            return CGRect(
+                x: size.width * 0.155,
+                y: yoke - overlap,
+                width: size.width * 0.69,
+                height: size.height - 2 * yoke + 2 * overlap
+            )
+        case .icon:
+            return CGRect(
+                x: size.width * 0.16,
+                y: size.height * 0.08,
+                width: size.width * 0.68,
+                height: size.height * 0.84
+            )
+        }
+    }
+}
+
 enum Palette {
     static let brass = Color(red: 0.76, green: 0.60, blue: 0.38)
     static let brassLite = Color(red: 0.90, green: 0.78, blue: 0.55)
@@ -47,7 +78,7 @@ struct HourglassGeom {
         let d = abs(t - 0.5) * 2
         let eased = d * d * (3 - 2 * d)
         let neck = rect.width * 0.028
-        let bulb = rect.width * 0.42
+        let bulb = rect.width * 0.48
         return neck + (bulb - neck) * eased
     }
 
@@ -106,6 +137,7 @@ struct HourglassView: View {
     var remainingFraction: Double
     var reduceMotion: Bool
     var siren: Bool = false
+    var chrome: HourglassChrome = .instrument
     /// Frozen frame for Dock snapshots — no TimelineView or falling grains.
     var animate: Bool = true
     /// Used when `animate` is false so the siren can still pulse on redraws.
@@ -142,7 +174,7 @@ struct HourglassView: View {
 
     private func hourglassCanvas(time: TimeInterval) -> some View {
         Canvas { context, size in
-                let glassRect = CGRect(x: size.width * 0.16, y: size.height * 0.07, width: size.width * 0.68, height: size.height * 0.86)
+                let glassRect = HourglassChrome.glassRect(in: size, chrome: chrome)
                 let geom = HourglassGeom(rect: glassRect)
                 let pulse = sirenPulse(time: time)
                 let sandColor = siren
@@ -150,7 +182,9 @@ struct HourglassView: View {
                     : Palette.sand(remaining: remainingFraction)
 
                 drawGlow(context: &context, size: size, remaining: remainingFraction, sirenPulse: pulse)
-                drawCaps(context: &context, size: size, glass: glassRect, brassTop: true)
+                if chrome == .icon {
+                    drawCaps(context: &context, glass: glassRect, top: true)
+                }
 
                 let outline = geom.outline()
                 context.fill(outline, with: .color(Palette.soot.opacity(0.55)))
@@ -229,7 +263,10 @@ struct HourglassView: View {
                 )
                 context.stroke(highlight, with: .color(.white.opacity(0.28)), lineWidth: 1.1)
 
-                drawCaps(context: &context, size: size, glass: glassRect, brassTop: false)
+                drawCollars(context: &context, geom: geom)
+                if chrome == .icon {
+                    drawCaps(context: &context, glass: glassRect, top: false)
+                }
             }
     }
 
@@ -276,19 +313,34 @@ struct HourglassView: View {
         _ = time
     }
 
-    private func drawCaps(context: inout GraphicsContext, size: CGSize, glass: CGRect, brassTop: Bool) {
+    private func drawCollars(context: inout GraphicsContext, geom: HourglassGeom) {
+        let topW = geom.halfWidth(atY: geom.topY) + 7
+        fillBrass(
+            context: &context,
+            rect: CGRect(x: geom.cx - topW, y: geom.topY - 3, width: topW * 2, height: 9),
+            radius: 3
+        )
+        let botW = geom.halfWidth(atY: geom.bottomY) + 7
+        fillBrass(
+            context: &context,
+            rect: CGRect(x: geom.cx - botW, y: geom.bottomY - 6, width: botW * 2, height: 9),
+            radius: 3
+        )
+    }
+
+    private func drawCaps(context: inout GraphicsContext, glass: CGRect, top: Bool) {
         let capWidth = glass.width * 0.92
         let capHeight: CGFloat = 16
         let x = glass.midX - capWidth / 2
-        if brassTop {
-            let top = CGRect(x: x, y: glass.minY - 14, width: capWidth, height: capHeight)
-            fillBrass(context: &context, rect: top)
-            let ring = CGRect(x: glass.midX - 18, y: top.minY - 10, width: 36, height: 12)
+        if top {
+            let band = CGRect(x: x, y: glass.minY - 14, width: capWidth, height: capHeight)
+            fillBrass(context: &context, rect: band)
+            let ring = CGRect(x: glass.midX - 18, y: band.minY - 10, width: 36, height: 12)
             fillBrass(context: &context, rect: ring, radius: 6)
         } else {
-            let bottom = CGRect(x: x, y: glass.maxY - 2, width: capWidth, height: capHeight)
-            fillBrass(context: &context, rect: bottom)
-            let foot = CGRect(x: x - 8, y: bottom.maxY - 4, width: capWidth + 16, height: 14)
+            let band = CGRect(x: x, y: glass.maxY - 2, width: capWidth, height: capHeight)
+            fillBrass(context: &context, rect: band)
+            let foot = CGRect(x: x - 8, y: band.maxY - 4, width: capWidth + 16, height: 14)
             fillBrass(context: &context, rect: foot, radius: 3)
         }
     }
@@ -304,7 +356,7 @@ struct HourglassView: View {
     }
 
     private func stepGrains(date: Date, size: CGSize) {
-        let glassRect = CGRect(x: size.width * 0.16, y: size.height * 0.07, width: size.width * 0.68, height: size.height * 0.86)
+        let glassRect = HourglassChrome.glassRect(in: size, chrome: chrome)
         let geom = HourglassGeom(rect: glassRect)
         let dt: CGFloat = 1.0 / 40.0
         let bottomFull = geom.bottomY - geom.neckY - 10

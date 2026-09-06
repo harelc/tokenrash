@@ -19,8 +19,10 @@ final class BudgetStore {
     let alarms = BudgetAlarms()
     /// When set, the hourglass shows this remaining fraction so warnings can be previewed.
     var previewRemaining: Double?
-    /// When set, the split-flap shows this instead of the live remaining amount.
-    var previewPlate: String?
+    /// When set, the remaining split-flap shows this instead of the live remaining amount.
+    var previewRemainingPlate: String?
+    /// When set, the spent split-flap shows this instead of the live spend.
+    var previewSpentPlate: String?
     private var previewTask: Task<Void, Never>?
 
     var remainingFraction: Double {
@@ -58,23 +60,25 @@ final class BudgetStore {
     func previewFlap() {
         previewTask?.cancel()
         previewRemaining = nil
-        let real = livePlate
-        previewPlate = flapDummy(matching: real)
+        previewRemainingPlate = flapDummy(matching: liveRemainingPlate)
+        previewSpentPlate = flapDummy(matching: liveSpentPlate)
         previewTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 800_000_000)
             guard !Task.isCancelled else { return }
-            previewPlate = nil
+            previewRemainingPlate = nil
+            previewSpentPlate = nil
         }
     }
 
     func previewAllWarnings() {
         previewTask?.cancel()
         previewTask = Task { @MainActor in
-            let real = livePlate
-            previewPlate = flapDummy(matching: real)
+            previewRemainingPlate = flapDummy(matching: liveRemainingPlate)
+            previewSpentPlate = flapDummy(matching: liveSpentPlate)
             try? await Task.sleep(nanoseconds: 800_000_000)
             guard !Task.isCancelled else { return }
-            previewPlate = nil
+            previewRemainingPlate = nil
+            previewSpentPlate = nil
             try? await Task.sleep(nanoseconds: 800_000_000)
             for (index, step) in TokenrashConfig.alarmSteps.enumerated() {
                 guard !Task.isCancelled else { return }
@@ -88,8 +92,12 @@ final class BudgetStore {
         }
     }
 
-    private var livePlate: String {
+    private var liveRemainingPlate: String {
         budget.map { TokenFormat.usd($0.remaining) } ?? "—"
+    }
+
+    private var liveSpentPlate: String {
+        budget.map { TokenFormat.usd($0.used) } ?? "—"
     }
 
     private func flapDummy(matching real: String) -> String {
@@ -100,7 +108,8 @@ final class BudgetStore {
 
     private func overlayPreview(remaining: Double, sound: TokenrashConfig.AlarmSound, hold: TimeInterval) {
         previewTask?.cancel()
-        previewPlate = nil
+        previewRemainingPlate = nil
+        previewSpentPlate = nil
         previewRemaining = remaining
         AlarmAudio.play(sound)
         previewTask = Task { @MainActor in
