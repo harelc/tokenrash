@@ -29,6 +29,22 @@ final class BudgetStore {
         previewRemaining ?? budget?.remainingFraction ?? 0.62
     }
 
+    var remainingPlate: String {
+        if let preview = previewRemainingPlate { return preview }
+        if let fraction = previewRemaining, let budget {
+            return TokenFormat.usd(budget.limit * fraction)
+        }
+        return budget.map { TokenFormat.usd($0.remaining) } ?? "—"
+    }
+
+    var spentPlate: String {
+        if let preview = previewSpentPlate { return preview }
+        if let fraction = previewRemaining, let budget {
+            return TokenFormat.usd(budget.limit * (1 - fraction))
+        }
+        return budget.map { TokenFormat.usd($0.used) } ?? "—"
+    }
+
     var isSiren: Bool {
         remainingFraction <= 0.01 && (previewRemaining != nil || budget != nil)
     }
@@ -60,8 +76,10 @@ final class BudgetStore {
     func previewFlap() {
         previewTask?.cancel()
         previewRemaining = nil
-        previewRemainingPlate = flapDummy(matching: liveRemainingPlate)
-        previewSpentPlate = flapDummy(matching: liveSpentPlate)
+        previewRemainingPlate = nil
+        previewSpentPlate = nil
+        previewRemainingPlate = flapDummy(matching: remainingPlate)
+        previewSpentPlate = flapDummy(matching: spentPlate)
         previewTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 800_000_000)
             guard !Task.isCancelled else { return }
@@ -73,8 +91,11 @@ final class BudgetStore {
     func previewAllWarnings() {
         previewTask?.cancel()
         previewTask = Task { @MainActor in
-            previewRemainingPlate = flapDummy(matching: liveRemainingPlate)
-            previewSpentPlate = flapDummy(matching: liveSpentPlate)
+            previewRemainingPlate = nil
+            previewSpentPlate = nil
+            previewRemaining = nil
+            previewRemainingPlate = flapDummy(matching: remainingPlate)
+            previewSpentPlate = flapDummy(matching: spentPlate)
             try? await Task.sleep(nanoseconds: 800_000_000)
             guard !Task.isCancelled else { return }
             previewRemainingPlate = nil
@@ -90,14 +111,6 @@ final class BudgetStore {
             guard !Task.isCancelled else { return }
             previewRemaining = nil
         }
-    }
-
-    private var liveRemainingPlate: String {
-        budget.map { TokenFormat.usd($0.remaining) } ?? "—"
-    }
-
-    private var liveSpentPlate: String {
-        budget.map { TokenFormat.usd($0.used) } ?? "—"
     }
 
     private func flapDummy(matching real: String) -> String {

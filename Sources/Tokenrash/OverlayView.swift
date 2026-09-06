@@ -21,10 +21,10 @@ struct OverlayView: View {
                 .frame(width: design.width, height: design.height)
 
                 VStack(spacing: 0) {
-                    FlapYoke(text: remainingPlate, reduceMotion: reduceMotion, kind: .crown)
+                    FlapYoke(text: store.remainingPlate, reduceMotion: reduceMotion, kind: .crown)
                         .frame(width: design.width * 0.88, height: HourglassChrome.yoke)
                     Spacer(minLength: 0)
-                    FlapYoke(text: spentPlate, reduceMotion: reduceMotion, kind: .plinth)
+                    FlapYoke(text: store.spentPlate, reduceMotion: reduceMotion, kind: .plinth)
                         .frame(width: design.width * 0.94, height: HourglassChrome.yoke)
                 }
                 .frame(width: design.width, height: design.height)
@@ -38,22 +38,6 @@ struct OverlayView: View {
             }
         }
         .background(.clear)
-    }
-
-    private var remainingPlate: String {
-        if let preview = store.previewRemainingPlate { return preview }
-        if let fraction = store.previewRemaining, let budget = store.budget {
-            return TokenFormat.usd(budget.limit * fraction)
-        }
-        return store.budget.map { TokenFormat.usd($0.remaining) } ?? "—"
-    }
-
-    private var spentPlate: String {
-        if let preview = store.previewSpentPlate { return preview }
-        if let fraction = store.previewRemaining, let budget = store.budget {
-            return TokenFormat.usd(budget.limit * (1 - fraction))
-        }
-        return store.budget.map { TokenFormat.usd($0.used) } ?? "—"
     }
 }
 
