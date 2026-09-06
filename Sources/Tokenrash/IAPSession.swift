@@ -35,7 +35,6 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
     func signIn() {
         store.phase = .signingIn
         probing = false
-        showLoginWindow()
         webView.load(URLRequest(url: TokenrashConfig.meURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
     }
 
@@ -76,8 +75,24 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        syncBrowserChrome()
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        syncBrowserChrome()
         Task { await pageFinished() }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        if let host = navigationAction.request.url?.host, isAuthHost(host) {
+            showLoginWindow()
+        }
+        decisionHandler(.allow)
     }
 
     func webView(
@@ -121,18 +136,44 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         webView.customUserAgent = TokenrashConfig.safariUserAgent
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        keeperWindow = NSWindow(
-            contentRect: NSRect(x: -9000, y: -9000, width: 1024, height: 768),
-            styleMask: [.borderless],
+        let keeper = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 1024, height: 768),
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
-        keeperWindow.isReleasedWhenClosed = false
-        keeperWindow.alphaValue = 1
-        keeperWindow.ignoresMouseEvents = true
-        keeperWindow.collectionBehavior = [.canJoinAllSpaces, .ignoresCycle]
-        keeperWindow.contentView = webView
-        keeperWindow.orderFrontRegardless()
+        keeper.isReleasedWhenClosed = false
+        keeper.hasShadow = false
+        keeper.hidesOnDeactivate = false
+        keeper.isExcludedFromWindowsMenu = true
+        keeper.collectionBehavior = [.ignoresCycle, .transient, .stationary, .fullScreenAuxiliary]
+        keeper.contentView = webView
+        keeperWindow = keeper
+        concealKeeper()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(concealKeeper),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(concealKeeper),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(concealKeeper),
+            name: NSWorkspace.screensDidWakeNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(concealKeeper),
+            name: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil
+        )
     }
 
     private func refresh(interactive: Bool) async {
@@ -146,7 +187,7 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
 
     private func pageFinished() async {
         let host = webView.url?.host ?? ""
-        if host.contains("accounts.google.com") {
+        if isAuthHost(host) {
             store.phase = .signingIn
             showLoginWindow()
             return
@@ -268,6 +309,7 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
             window.title = "Sign in to Tokenrash"
             window.contentView = webView
             window.isReleasedWhenClosed = false
+            window.isExcludedFromWindowsMenu = true
             let closer = LoginWindowCloser(onClose: { [weak self] in
                 self?.parkWebView()
                 if self?.store.budget == nil, self?.store.phase == .signingIn {
@@ -285,8 +327,33 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    private func syncBrowserChrome() {
+        let host = webView.url?.host ?? ""
+        if isAuthHost(host) {
+            store.phase = .signingIn
+            showLoginWindow()
+        } else if loginWindow?.isVisible == true {
+            closeLogin()
+        }
+    }
+
+    private func isAuthHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        if h.contains("accounts.google.") { return true }
+        if h.contains("iap.googleapis.com") { return true }
+        return false
+    }
+
+    @objc private func concealKeeper() {
+        guard webView.window === keeperWindow else { return }
+        parkWebView()
+    }
+
     private func parkWebView() {
         webView.removeFromSuperview()
+        keeperWindow.alphaValue = 0
+        keeperWindow.ignoresMouseEvents = true
+        keeperWindow.hasShadow = false
         keeperWindow.contentView = webView
         keeperWindow.orderFrontRegardless()
     }
