@@ -30,3 +30,7 @@ If Gatekeeper complains: `xattr -dr com.apple.quarantine /Applications/Tokenrash
 ```
 
 Rebuilds and launches `dist/Tokenrash.app` (does not install). Do not enable Launch at Login on that copy — `run.sh` deletes `dist/` on every rebuild. Use the Applications install for anything that should survive a restart.
+
+Architecture, auth, preferences, and how to add a Swift file: [docs/DEVELOP.md](docs/DEVELOP.md).
+
+What landed on `main` and why: [docs/CHANGELOG.md](docs/CHANGELOG.md).
