@@ -2,8 +2,16 @@ import Foundation
 
 enum TokenrashConfig {
     static let meURL = URL(string: "https://tokendash-backend-api-olut5dffgq-ew.a.run.app/me")!
+    static let apiMeURL = URL(string: "https://tokendash-backend-api-olut5dffgq-ew.a.run.app/api/me")!
     static let origin = URL(string: "https://tokendash-backend-api-olut5dffgq-ew.a.run.app")!
-    static let pollInterval: TimeInterval = 180
+
+    /// Fat glass: 3 minutes. Below 20%: 45s. Below 10%: 30s.
+    static func pollInterval(remaining: Double?) -> TimeInterval {
+        guard let remaining else { return 180 }
+        if remaining <= 0.10 { return 30 }
+        if remaining <= 0.20 { return 45 }
+        return 180
+    }
     static let safariUserAgent =
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
 

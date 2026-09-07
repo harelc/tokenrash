@@ -9,11 +9,12 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 swiftc -parse-as-library \
+  -swift-version 6 \
   -O \
   -o "$APP/Contents/MacOS/Tokenrash" \
   -sdk "$SDK" \
   -target arm64-apple-macos14.0 \
-  -framework SwiftUI -framework AppKit -framework WebKit -framework ServiceManagement \
+  -framework SwiftUI -framework AppKit -framework WebKit -framework ServiceManagement -framework Metal -framework MetalKit \
   "$ROOT"/Sources/Tokenrash/*.swift
 
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"

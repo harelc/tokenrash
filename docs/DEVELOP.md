@@ -2,7 +2,7 @@
 
 User-facing install is in the [root README](../README.md). History of `main` is in [CHANGELOG.md](CHANGELOG.md).
 
-Tokenrash is a small SwiftUI + AppKit overlay. Remaining daily budget comes from Lightricks tokendash `GET /api/me` after Google IAP in a hidden `WKWebView`. There is no Xcode project; the `.app` is assembled by `scripts/build.sh`.
+Tokenrash is a small SwiftUI + AppKit overlay. Remaining daily budget comes from Lightricks tokendash `GET /api/me` after Google IAP. A `WKWebView` exists only while signing in; afterward cookies live in the WebKit data store and polls use `URLSession`. There is no Xcode project; the `.app` is assembled by `scripts/build.sh`.
 
 ## Requirements
 
@@ -17,7 +17,7 @@ Apple silicon, macOS 14+, Xcode Command Line Tools. Bundle id `com.lightricks.to
 
 `run.sh` deletes `dist/` on every rebuild. Do not turn on **Launch at Login** against a `run.sh` copy; use `/Applications/Tokenrash.app`.
 
-`build.sh` compiles every `Sources/Tokenrash/*.swift` with `swiftc` for `arm64-apple-macos14.0`, copies `Resources/Info.plist` and `AppIcon.icns`, and ad-hoc codesigns. Adding a new Swift file in that folder is enough; nothing else lists sources.
+`build.sh` compiles every `Sources/Tokenrash/*.swift` with `swiftc -swift-version 6` for `arm64-apple-macos14.0`, copies `Resources/Info.plist` and `AppIcon.icns`, and ad-hoc codesigns. Adding a new Swift file in that folder is enough; nothing else lists sources. Links **Metal** and **MetalKit**.
 
 Do **not** use `swift build` or `xcodebuild`. `Package.swift` exists so the folder is a Swift package, but SPM emits a CLI binary, not an `.app`. `xcodebuild` has no project to drive.
 
@@ -39,14 +39,15 @@ dist/                  local .app (gitignored)
 |---|---|
 | `App.swift` | `@main`, menu bar, overlay panel, Dock policy, preference toggles |
 | `OverlayView.swift` | Hourglass + look chrome, scaled to the panel |
-| `HourglassView.swift` | Canvas sand, silhouettes, collars; instrument vs Dock chrome |
+| `HourglassView.swift` | Glass: Metal shader on the overlay, still Canvas for the Dock tile |
+| `MetalHourglass.swift` | Runtime-compiled fragment shader + `MTKView` for the live overlay |
 | `WidgetLook.swift` | Five looks (palette, silhouette, numerals); persisted |
 | `WidgetChrome.swift` | Crown / plinth yokes per look |
 | `SplitFlapBoard.swift` | Remaining/spent flap tiles + tick-clack |
 | `BudgetStore.swift` | `@MainActor` live + preview state |
 | `TokenBudget.swift` | `/me` parser and USD formatting |
-| `IAPSession.swift` | Hidden WebView, IAP login, poll `/me` |
-| `Config.swift` | Backend origin, poll interval, alarm steps |
+| `IAPSession.swift` | IAP login WebView, `URLSession` `/api/me`, adaptive poll |
+| `Config.swift` | Backend origin, poll intervals, alarm steps |
 | `BudgetAlarms.swift` | Thresholds, sounds, sound/Dock/counter prefs |
 | `DockIcon.swift` | Runtime squircle tile with remaining badge |
 | `Install.swift` | Copy to Applications, `SMAppService` login item |
@@ -56,9 +57,9 @@ dist/                  local .app (gitignored)
 
 `AppDelegate` builds a borderless `NSPanel` at `.floating`, always on all Spaces. `LSUIElement` is true, so the process is a menu-bar accessory unless **Show in Dock** flips `NSApp.setActivationPolicy(.regular)`.
 
-Design size is 200×300 (`HourglassChrome.design`, aspect 1.5). The panel is movable by the background; the resize handle uses its own mouse-tracking loop so SwiftUI and window-move do not steal the drag. Frame is restored from `overlay.frame.v2`; height is recomputed from width × aspect.
+Design size is 200×300 (`HourglassChrome.design`, aspect 1.5). The panel is movable by the background; the resize handle uses its own mouse-tracking loop so SwiftUI and window-move do not steal the drag. Frame is restored from `overlay.frame.v2` on move/resize (not every second); height is recomputed from width × aspect. Metal drawing pauses when the panel is hidden or occluded.
 
-Left-click the menu-bar hourglass for the menu. Overlay tap while signed out starts sign-in.
+Left-click the menu-bar hourglass for the menu (grouped: overlay, look/counters, prefs, preview, account). Overlay tap while signed out starts sign-in.
 
 ## Looks and counters
 
@@ -72,7 +73,7 @@ Left-click the menu-bar hourglass for the menu. Overlay tap while signed out sta
 | Telemetry | diamond | amber mono HUD |
 | Jelly | blob | puffy rounded |
 
-`LookChrome` draws the top remaining yoke and bottom spent yoke. **Top counter** / **Bottom counter** hide them independently; both on is the default. The glass still draws; only the plates go away.
+`LookChrome` draws the top remaining yoke and bottom spent yoke. **Remaining** / **Spent** hide them independently; both on is the default. The glass still draws; only the plates go away.
 
 The Dock tile uses `HourglassView(chrome: .icon, look:)` plus a remaining-USD badge. macOS does not remask `applicationIconImage`, so `DockIcon` clips to a squircle itself.
 
@@ -86,22 +87,21 @@ GET /api/me  →  { email, today: { spend_usd, effective_limit_usd | standing_li
 
 `TokenBudgetParser.extract` only reads a root `today`. Org dumps (`nodes`, or `personas` without `today`) are dropped. Walking `/tree` cannot recover a manager’s own spend: team/org `spend` is the sum of children, and ICs appear once. Always use the personal card, not `/tree`.
 
-Poll interval is 180s (`TokenrashConfig.pollInterval`). **Refresh now** reloads in the keeper WebView.
+Poll interval is adaptive (`TokenrashConfig.pollInterval(remaining:)`): 180s when remaining is above 20%, 45s at or below 20%, 30s at or below 10%. **Refresh** hits `URLSession` `GET /api/me` with stored IAP cookies; the WebView opens only if that session is dead.
 
 ## Auth (IAP, not gcloud)
 
-There is no JWT or `gcloud` token. A `WKWebView` with the default data store holds Google IAP cookies.
+There is no JWT or `gcloud` token. Google IAP cookies live in `WKWebsiteDataStore.default()` and survive after the WebView is torn down.
 
-- **Keeper panel** — off-screen, transparent, mouse-ignored. Hosts the WebView between logins. macOS used to shove this onto the display after restart or display wake as an unclickable `/me` window; `concealKeeper` re-parks it on screen-parameter, wake, and Space changes.
-- **Login window** — only when the navigation host is Google accounts or `iap.googleapis.com`. Closing it parks the WebView back in the keeper.
-- **Fetch** — `fetch('/api/me', { credentials: 'include', headers: { Accept: 'application/json' } })` inside the page (`/me` is the SPA HTML; IAP still starts by navigating to `/me`).
-- **Sniffer** — injected `fetch` / XHR hook posts `{ url, body }` only for `/api/me` and `/me` URLs; `/tree` is ignored.
+- **Login window** — a `WKWebView` exists only while signing in. It appears when the navigation host is Google accounts or `iap.googleapis.com`. After a successful ingest (sniffer or in-page `fetch('/api/me')`), the WebView is destroyed. Closing the window without a budget returns to signed-out.
+- **Live fetch** — `URLSession` `GET /api/me` with `Accept: application/json`, Safari user-agent, and a `Cookie` header copied from `WKHTTPCookieStore`. `Set-Cookie` on the response is written back to the WebKit store. There is no keeper panel.
+- **Sniffer** — injected `fetch` / XHR hook during login posts `{ url, body }` only for `/api/me` and `/me` URLs; `/tree` is ignored.
 
-Safari user-agent is set so IAP does not bounce to a broken client.
+Safari user-agent is set so IAP does not bounce to a broken client. Signed-out is an empty glass with **Sign In** on the remaining yoke, not a fake 62% hourglass.
 
 ## Alarms and sound
 
-Steps in `TokenrashConfig.alarmSteps`: 10% (bell), 5% (bells), 1% (siren + red flash). Each id fires once per day until remaining jumps up by more than 8% (reset). **Preview warnings** drives `BudgetStore` preview fields so the overlay animates without waiting for spend.
+Steps in `TokenrashConfig.alarmSteps`: 10% (bell), 5% (bells), 1% (siren + red flash). Each id fires once per day until remaining jumps up by more than 8% (reset). Sounds play even if the overlay is hidden. Crossing 10% while the panel is hidden or occluded brings it forward once. **Preview Alarms** drives `BudgetStore` preview fields so the overlay animates without waiting for spend.
 
 `SoundSettings` gates alarm and flap audio. Split-flap tiles tick/clack as they fold.
 
@@ -122,7 +122,7 @@ All under the app’s standard `UserDefaults` (bundle `com.lightricks.tokenrash`
 
 ## Debug
 
-Menu **Inspect /me payload** shows the last parsed JSON.
+Menu **Inspect Payload…** shows the last parsed JSON.
 
 On disk:
 
@@ -133,17 +133,7 @@ Console: `NSLog` lines tagged `[Tokenrash]`.
 
 ## Concurrency
 
-`BudgetStore` is `@MainActor @Observable`. Timer callbacks that touch it must hop explicitly:
-
-```swift
-Timer.scheduledTimer(...) { [weak self] _ in
-    Task { @MainActor [self] in
-        await self?.refresh(interactive: false)
-    }
-}
-```
-
-Flap copy (`remainingPlate` / `spentPlate`) is computed on the store so stricter isolation checks compile. Do not read those from a background task.
+`BudgetStore` is `@MainActor @Observable`. Silent `/api/me` polls are a `Task` on that actor, not a repeating `Timer`. Flap copy (`remainingPlate` / `spentPlate`) is computed on the store so stricter isolation checks compile. Do not read those from a background task.
 
 ## Install and login item
 

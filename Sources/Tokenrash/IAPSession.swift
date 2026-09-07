@@ -5,48 +5,58 @@ import WebKit
 @MainActor
 final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     let store: BudgetStore
-    private var webView: WKWebView!
+    private var webView: WKWebView?
     private var loginWindow: NSWindow?
-    private var keeperWindow: NSWindow!
     private var loginDelegate: LoginWindowCloser?
-    private var pollTimer: Timer?
+    private var pollTask: Task<Void, Never>?
     private let dumpURL = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("Library/Logs/Tokenrash-last-me.json")
     private let captureURL = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("Library/Logs/Tokenrash-captures.jsonl")
+    private let urlSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieAcceptPolicy = .never
+        config.timeoutIntervalForRequest = 30
+        config.httpMaximumConnectionsPerHost = 2
+        return URLSession(configuration: config)
+    }()
 
     init(store: BudgetStore) {
         self.store = store
         super.init()
-        setupWebView()
     }
 
     func start() {
-        Task { await refresh(interactive: false) }
-        pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: TokenrashConfig.pollInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [self] in
-                await self?.refresh(interactive: false)
-            }
-        }
+        Task { await silentRefresh() }
     }
 
     func signIn() {
         store.phase = .signingIn
-        webView.load(URLRequest(url: TokenrashConfig.meURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+        let view = ensureWebView()
+        view.load(URLRequest(url: TokenrashConfig.meURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
     }
 
-    /// Reload `/me` in the hidden keeper WebView. Only surfaces a window if IAP
-    /// bounces to Google and the user actually needs to sign in again.
+    /// URLSession `/api/me` with stored IAP cookies. Opens Google only if the session is dead.
     func refreshNow() {
-        Task { await refresh(interactive: false) }
+        Task {
+            switch await fetchAPIMe() {
+            case .ingested:
+                schedulePoll()
+            case .unauthorized:
+                signIn()
+            case .failed:
+                NSLog("[Tokenrash] refresh failed; keeping last budget")
+            }
+        }
     }
 
     func signOut() {
+        pollTask?.cancel()
+        pollTask = nil
+        teardownBrowser()
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         WKWebsiteDataStore.default().removeData(ofTypes: types, modifiedSince: .distantPast) { }
         store.markSignedOut()
-        closeLogin()
     }
 
     func inspectPayload() {
@@ -131,69 +141,133 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         }
     }
 
-    private func setupWebView() {
+    private func silentRefresh() async {
+        switch await fetchAPIMe() {
+        case .ingested:
+            schedulePoll()
+        case .unauthorized, .failed:
+            break
+        }
+    }
+
+    private func schedulePoll() {
+        pollTask?.cancel()
+        guard store.budget != nil else { return }
+        pollTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                let interval = TokenrashConfig.pollInterval(remaining: self.store.budget?.remainingFraction)
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                switch await self.fetchAPIMe() {
+                case .ingested:
+                    continue
+                case .unauthorized, .failed:
+                    continue
+                }
+            }
+        }
+    }
+
+    private enum FetchOutcome {
+        case ingested
+        case unauthorized
+        case failed
+    }
+
+    /// GET `/api/me` with cookies from the WebKit data store. No live WebView.
+    private func fetchAPIMe() async -> FetchOutcome {
+        let cookies = await allCookies()
+        var request = URLRequest(url: TokenrashConfig.apiMeURL)
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(TokenrashConfig.safariUserAgent, forHTTPHeaderField: "User-Agent")
+        let sent = cookies.filter { Self.cookie($0, appliesTo: TokenrashConfig.apiMeURL) }
+        let header = HTTPCookie.requestHeaderFields(with: sent)
+        if let value = header["Cookie"] {
+            request.setValue(value, forHTTPHeaderField: "Cookie")
+        }
+        do {
+            let (data, response) = try await urlSession.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return .failed }
+            await storeResponseCookies(http, for: TokenrashConfig.apiMeURL)
+            if http.statusCode == 401 || http.statusCode == 403 { return .unauthorized }
+            if (300..<400).contains(http.statusCode) { return .unauthorized }
+            guard http.statusCode == 200 else { return .failed }
+            let body = String(data: data, encoding: .utf8) ?? ""
+            appendCapture(source: "URLSession GET /api/me \(http.statusCode)", body: body)
+            if looksLikeHTML(body) { return .unauthorized }
+            if ingest(body, source: "URLSession GET /api/me") { return .ingested }
+            return .failed
+        } catch {
+            NSLog("[Tokenrash] URLSession /api/me: \(error.localizedDescription)")
+            return .failed
+        }
+    }
+
+    private func allCookies() async -> [HTTPCookie] {
+        await withCheckedContinuation { continuation in
+            WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
+                continuation.resume(returning: cookies)
+            }
+        }
+    }
+
+    private func storeResponseCookies(_ response: HTTPURLResponse, for url: URL) async {
+        var fields: [String: String] = [:]
+        for (key, value) in response.allHeaderFields {
+            guard let value = value as? String else { continue }
+            fields[String(describing: key)] = value
+        }
+        let cookies = HTTPCookie.cookies(withResponseHeaderFields: fields, for: url)
+        let store = WKWebsiteDataStore.default().httpCookieStore
+        for cookie in cookies {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                store.setCookie(cookie) { continuation.resume() }
+            }
+        }
+    }
+
+    private static func cookie(_ cookie: HTTPCookie, appliesTo url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        let domain = cookie.domain.lowercased()
+        if domain.hasPrefix(".") {
+            let bare = String(domain.dropFirst())
+            if host != bare && !host.hasSuffix("." + bare) { return false }
+        } else if host != domain {
+            return false
+        }
+        let path = url.path.isEmpty ? "/" : url.path
+        let cookiePath = cookie.path.isEmpty ? "/" : cookie.path
+        let pathOK = path == cookiePath
+            || (cookiePath.hasSuffix("/") && path.hasPrefix(cookiePath))
+            || path.hasPrefix(cookiePath + "/")
+        if !pathOK { return false }
+        if cookie.isSecure, url.scheme?.lowercased() != "https" { return false }
+        if let expiry = cookie.expiresDate, expiry < Date() { return false }
+        return true
+    }
+
+    private func ensureWebView() -> WKWebView {
+        if let webView { return webView }
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         config.userContentController.add(self, name: "tokenrash")
-        config.userContentController.addUserScript(WKUserScript(source: Self.snifferScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
-        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
-        webView.customUserAgent = TokenrashConfig.safariUserAgent
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
-        let keeper = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 1024, height: 768),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
+        config.userContentController.addUserScript(
+            WKUserScript(source: Self.snifferScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
-        keeper.isReleasedWhenClosed = false
-        keeper.hasShadow = false
-        keeper.hidesOnDeactivate = false
-        keeper.isExcludedFromWindowsMenu = true
-        keeper.collectionBehavior = [.ignoresCycle, .transient, .stationary, .fullScreenAuxiliary]
-        keeper.contentView = webView
-        keeperWindow = keeper
-        concealKeeper()
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(concealKeeper),
-            name: NSApplication.didChangeScreenParametersNotification,
-            object: nil
-        )
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(concealKeeper),
-            name: NSWorkspace.didWakeNotification,
-            object: nil
-        )
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(concealKeeper),
-            name: NSWorkspace.screensDidWakeNotification,
-            object: nil
-        )
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(concealKeeper),
-            name: NSWorkspace.activeSpaceDidChangeNotification,
-            object: nil
-        )
-    }
-
-    private func refresh(interactive: Bool) async {
-        if interactive {
-            signIn()
-            return
-        }
-        if webView.url?.host == TokenrashConfig.origin.host {
-            await fetchMeJSON()
-            if store.budget != nil { return }
-        }
-        webView.load(URLRequest(url: TokenrashConfig.meURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 520, height: 680), configuration: config)
+        view.customUserAgent = TokenrashConfig.safariUserAgent
+        view.navigationDelegate = self
+        view.uiDelegate = self
+        webView = view
+        return view
     }
 
     private func pageFinished() async {
+        guard let webView else { return }
         let host = webView.url?.host ?? ""
         if isAuthHost(host) {
             store.phase = .signingIn
@@ -201,13 +275,14 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
             return
         }
         guard host == TokenrashConfig.origin.host else { return }
-        await fetchMeJSON()
+        await fetchMeJSONFromPage()
         if store.budget != nil { return }
         await harvestFromPageText()
     }
 
     /// Personal JSON is `GET /api/me`. Navigating to `/me` loads the SPA HTML.
-    private func fetchMeJSON() async {
+    private func fetchMeJSONFromPage() async {
+        guard let webView else { return }
         let script = """
         const pull = async (path) => {
           const r = await fetch(path, {
@@ -245,6 +320,7 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
     }
 
     private func harvestFromPageText() async {
+        guard let webView else { return }
         let script = """
         (function() {
           const pre = document.querySelector('pre');
@@ -261,22 +337,28 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         ingest(text, source: "dom")
     }
 
-    private func ingest(_ raw: String, source: String) {
+    @discardableResult
+    private func ingest(_ raw: String, source: String) -> Bool {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
         appendCapture(source: source, body: trimmed)
-        if looksLikeHTML(trimmed) { return }
-        if looksLikeOrgGraph(trimmed) { return }
-        if trimmed.contains("\"series\"") && !trimmed.contains("\"spend_usd\"") { return }
+        if looksLikeHTML(trimmed) { return false }
+        if looksLikeOrgGraph(trimmed) { return false }
+        if trimmed.contains("\"series\"") && !trimmed.contains("\"spend_usd\"") { return false }
         do {
             let (budget, pretty) = try TokenBudgetParser.parse(text: trimmed)
             store.apply(budget: budget, rawJSON: pretty)
             try? pretty.write(to: dumpURL, atomically: true, encoding: .utf8)
-            closeLogin()
+            Task { @MainActor [weak self] in
+                self?.teardownBrowser()
+                self?.schedulePoll()
+            }
             NSLog("[Tokenrash] budget from \(source): used=\(budget.used) limit=\(budget.limit)")
+            return true
         } catch {
             try? trimmed.write(to: dumpURL, atomically: true, encoding: .utf8)
             NSLog("[Tokenrash] parse miss from \(source): \(trimmed.prefix(160))")
+            return false
         }
     }
 
@@ -320,6 +402,7 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
     }
 
     private func showLoginWindow() {
+        let view = ensureWebView()
         if loginWindow == nil {
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 520, height: 680),
@@ -328,11 +411,10 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
                 defer: false
             )
             window.title = "Sign in to Tokenrash"
-            window.contentView = webView
             window.isReleasedWhenClosed = false
             window.isExcludedFromWindowsMenu = true
             let closer = LoginWindowCloser(onClose: { [weak self] in
-                self?.parkWebView()
+                self?.teardownBrowser()
                 if self?.store.budget == nil, self?.store.phase == .signingIn {
                     self?.store.phase = .signedOut
                 }
@@ -341,21 +423,19 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
             window.delegate = closer
             loginWindow = window
         }
-        webView.removeFromSuperview()
-        loginWindow?.contentView = webView
+        view.removeFromSuperview()
+        loginWindow?.contentView = view
         loginWindow?.center()
         loginWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     private func syncBrowserChrome() {
-        let host = webView.url?.host ?? ""
+        let host = webView?.url?.host ?? ""
         if isAuthHost(host) {
             store.phase = .signingIn
             showLoginWindow()
         }
-        // Do not park the WebView just because we left Google — that reparent
-        // mid-redirect drops the IAP cookie. ingest() closes the window.
     }
 
     private func isAuthHost(_ host: String) -> Bool {
@@ -365,23 +445,19 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         return false
     }
 
-    @objc private func concealKeeper() {
-        guard webView.window === keeperWindow else { return }
-        parkWebView()
-    }
-
-    private func parkWebView() {
-        webView.removeFromSuperview()
-        keeperWindow.alphaValue = 0
-        keeperWindow.ignoresMouseEvents = true
-        keeperWindow.hasShadow = false
-        keeperWindow.contentView = webView
-        keeperWindow.orderFrontRegardless()
-    }
-
-    private func closeLogin() {
+    private func teardownBrowser() {
+        loginWindow?.delegate = nil
         loginWindow?.orderOut(nil)
-        parkWebView()
+        loginWindow?.contentView = nil
+        loginWindow = nil
+        loginDelegate = nil
+        guard let webView else { return }
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "tokenrash")
+        webView.removeFromSuperview()
+        self.webView = nil
     }
 
     private static func jsonString(_ value: String) -> String {

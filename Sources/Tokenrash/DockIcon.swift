@@ -6,9 +6,10 @@ enum DockIcon {
     private static let logical = CGSize(width: 128, height: 128)
     private static let scale: CGFloat = 2
 
-    static func apply(remaining: Double, siren: Bool, badge: String?, look: WidgetLook) {
+    static func apply(remaining: Double, used: Double, siren: Bool, badge: String?, look: WidgetLook) {
         let icon = DockHourglassIcon(
             remaining: remaining,
+            used: used,
             siren: siren,
             clock: Date().timeIntervalSinceReferenceDate,
             look: look
@@ -102,6 +103,7 @@ enum DockIcon {
 
 private struct DockHourglassIcon: View {
     var remaining: Double
+    var used: Double
     var siren: Bool
     var clock: TimeInterval
     var look: WidgetLook
@@ -111,6 +113,7 @@ private struct DockHourglassIcon: View {
             look.dockBackdrop
             HourglassView(
                 remainingFraction: remaining,
+                usedFraction: used,
                 reduceMotion: true,
                 siren: siren,
                 chrome: .icon,

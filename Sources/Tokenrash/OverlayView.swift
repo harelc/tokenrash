@@ -15,10 +15,12 @@ struct OverlayView: View {
             ZStack {
                 HourglassView(
                     remainingFraction: store.remainingFraction,
+                    usedFraction: store.usedFraction,
                     reduceMotion: reduceMotion,
                     siren: store.isSiren,
                     chrome: .instrument,
-                    look: look
+                    look: look,
+                    animate: store.overlayActive && (store.budget != nil || store.previewRemaining != nil)
                 )
                 .frame(width: design.width, height: design.height)
 

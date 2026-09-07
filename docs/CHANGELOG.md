@@ -10,7 +10,16 @@ Newest first. Commit subjects are the source of truth; bodies are folded in wher
 
 - Bundle id is `com.lightricks.tokenrash` so the app identity matches the org, not a personal account. Preferences and Launch at Login live under the new id.
 - Clone URL is `https://github.com/Lightricks/tokenrash.git`.
-- Fetch personal JSON from `GET /api/me` (`/me` is the SPA). Keep the IAP window up until the budget is ingested so the WebView is not reparented mid-redirect.
+- Fetch personal JSON from `GET /api/me` (`/me` is the SPA). After sign-in, cookies live in the WebKit data store and polls use `URLSession` — no hidden keeper WebView.
+- Poll faster as remaining drops (45s below 20%, 30s below 10%) so a binge is not three minutes late.
+- Signed-out is an empty glass with **Sign In** on the yoke, not a fake 62% hourglass. Crossing 10% remaining while the overlay is hidden brings it forward once; bells still fire when it is off-screen.
+- Overlay hourglass is a Metal fragment shader (~10 fps while sand flows, paused when hidden, occluded, empty, or full) so a Canvas timeline is not burning CPU all day. Dock tile stays a still Canvas snapshot.
+- Menu is grouped (overlay, look/counters, prefs, preview, account) and title-cased. Overlay frame is saved on move/resize, not every second.
+- `swiftc` builds with `-swift-version 6`. Alarm/flap audio state is `@MainActor` so mutable globals are not a Swift 6 error.
+
+### Fixed
+
+- Remaining sand sits in the top bulb and spent in the bottom; falling grains use the pile color; the stream is a visible column rather than a hairline. Empty cavity is glass, not grit.
 
 ### Added
 

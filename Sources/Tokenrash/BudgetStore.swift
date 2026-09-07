@@ -26,18 +26,28 @@ final class BudgetStore {
     var look: WidgetLook = WidgetLook.stored
     var showTopCounter = CounterSettings.showTop
     var showBottomCounter = CounterSettings.showBottom
+    /// False when the overlay is hidden or fully occluded — pause the Metal drawable.
+    var overlayActive = true
     private var previewTask: Task<Void, Never>?
 
     var remainingFraction: Double {
-        previewRemaining ?? budget?.remainingFraction ?? 0.62
+        previewRemaining ?? budget?.remainingFraction ?? 0
+    }
+
+    /// Spent pile. Signed-out is empty glass (not a full lower bulb).
+    var usedFraction: Double {
+        if let preview = previewRemaining { return 1 - preview }
+        if let budget { return budget.usedFraction }
+        return 0
     }
 
     var remainingPlate: String {
         if let preview = previewRemainingPlate { return preview }
+        if budget == nil, previewRemaining == nil { return "Sign In" }
         if let fraction = previewRemaining, let budget {
             return TokenFormat.usd(budget.limit * fraction)
         }
-        return budget.map { TokenFormat.usd($0.remaining) } ?? "—"
+        return budget.map { TokenFormat.usd($0.remaining) } ?? "Sign In"
     }
 
     var spentPlate: String {

@@ -45,7 +45,7 @@ enum CounterSettings {
 
 @MainActor
 final class BudgetAlarms {
-    var onTrip: (() -> Void)?
+    var onTrip: ((TokenrashConfig.AlarmStep) -> Void)?
 
     private let lastKey = "alarms.lastRemaining"
     private let firedKey = "alarms.fired"
@@ -81,14 +81,15 @@ final class BudgetAlarms {
         defaults.set(Array(fired), forKey: firedKey)
 
         guard let tripped else { return }
-        onTrip?()
         AlarmAudio.play(tripped.sound)
+        onTrip?(tripped)
     }
 }
 
+@MainActor
 enum AlarmAudio {
     private static var current: NSSound?
-    private static var followUp: DispatchWorkItem?
+    private static var followUp: Task<Void, Never>?
 
     static func play(_ sound: TokenrashConfig.AlarmSound) {
         guard SoundSettings.enabled else { return }
@@ -106,11 +107,11 @@ enum AlarmAudio {
     private static func ring(times: Int) {
         playSound(NSSound(named: "Glass"))
         guard times > 1 else { return }
-        let work = DispatchWorkItem {
+        followUp = Task {
+            try? await Task.sleep(nanoseconds: 380_000_000)
+            guard !Task.isCancelled else { return }
             playSound(NSSound(named: "Glass"))
         }
-        followUp = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.38, execute: work)
     }
 
     private static func playSound(_ sound: NSSound?) {
@@ -141,6 +142,7 @@ enum AlarmAudio {
     }
 }
 
+@MainActor
 enum FlapAudio {
     private static var playing: [NSSound] = []
 
@@ -158,7 +160,8 @@ enum FlapAudio {
         sound.volume = volume
         playing.append(sound)
         sound.play()
-        DispatchQueue.main.asyncAfter(deadline: .now() + keep) {
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(keep * 1_000_000_000))
             playing.removeAll { !$0.isPlaying }
         }
     }

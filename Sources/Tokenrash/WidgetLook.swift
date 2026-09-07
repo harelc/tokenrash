@@ -27,6 +27,16 @@ enum WidgetLook: String, CaseIterable, Identifiable {
         }
     }
 
+    var metalIndex: Float {
+        switch self {
+        case .horologist: 0
+        case .inkwell: 1
+        case .playroom: 2
+        case .telemetry: 3
+        case .jelly: 4
+        }
+    }
+
     var silhouette: GlassSilhouette {
         switch self {
         case .horologist: .classic
@@ -76,11 +86,11 @@ enum WidgetLook: String, CaseIterable, Identifiable {
 
     var streamWidth: CGFloat {
         switch self {
-        case .horologist: 2.2
-        case .inkwell: 1.1
-        case .playroom: 4.5
-        case .telemetry: 1.0
-        case .jelly: 5.5
+        case .horologist: 3.6
+        case .inkwell: 2.2
+        case .playroom: 5.4
+        case .telemetry: 2.0
+        case .jelly: 6.4
         }
     }
 
@@ -256,4 +266,14 @@ enum GlassSilhouette {
     case toy
     case diamond
     case blob
+
+    var metalID: Float {
+        switch self {
+        case .classic: 0
+        case .column: 1
+        case .toy: 2
+        case .diamond: 3
+        case .blob: 4
+        }
+    }
 }

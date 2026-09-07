@@ -74,37 +74,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay.orderFrontRegardless()
 
         iap.start()
-        store.alarms.onTrip = { [weak self] in
-            self?.overlay.orderFrontRegardless()
+        store.alarms.onTrip = { [weak self] step in
+            guard let self else { return }
+            let hidden = !self.overlay.isVisible || !self.overlay.occlusionState.contains(.visible)
+            if hidden, step.id == 10 {
+                self.revealOverlay()
+            }
         }
         AppInstall.applyPendingLaunchAtLogin()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(persistOverlayFrame),
+            name: NSWindow.didMoveNotification, object: overlay
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(persistOverlayFrame),
+            name: NSWindow.didEndLiveResizeNotification, object: overlay
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(overlayOcclusionChanged),
+            name: NSWindow.didChangeOcclusionStateNotification, object: overlay
+        )
         badgeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [self] in self?.syncBadge() }
         }
+        badgeTimer?.tolerance = 0.4
+        syncOverlayActivity()
         syncBadge()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        overlay.orderFrontRegardless()
+        revealOverlay()
         return false
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        menu.addItem(withTitle: overlay.isVisible ? "Hide widget" : "Show widget", action: #selector(toggleOverlay), keyEquivalent: "")
-        menu.addItem(withTitle: store.budget == nil ? "Sign in…" : "Refresh now", action: #selector(signInOrRefresh), keyEquivalent: "")
-        menu.addItem(withTitle: "Inspect /me payload", action: #selector(inspect), keyEquivalent: "")
+
+        addItem(menu, overlay.isVisible ? "Hide Widget" : "Show Widget", #selector(toggleOverlay))
+        addItem(menu, store.budget == nil ? "Sign In…" : "Refresh", #selector(signInOrRefresh))
+
         menu.addItem(.separator())
-        let clickThrough = menu.addItem(withTitle: "Click through", action: #selector(toggleClickThrough), keyEquivalent: "")
-        clickThrough.state = overlay.ignoresMouseEvents ? .on : .off
-        let sounds = menu.addItem(withTitle: "Sound effects", action: #selector(toggleSounds), keyEquivalent: "")
-        sounds.state = SoundSettings.enabled ? .on : .off
-        let dock = menu.addItem(withTitle: "Show in Dock", action: #selector(toggleDock), keyEquivalent: "")
-        dock.state = DockSettings.enabled ? .on : .off
-        let topCounter = menu.addItem(withTitle: "Top counter", action: #selector(toggleTopCounter), keyEquivalent: "")
-        topCounter.state = store.showTopCounter ? .on : .off
-        let bottomCounter = menu.addItem(withTitle: "Bottom counter", action: #selector(toggleBottomCounter), keyEquivalent: "")
-        bottomCounter.state = store.showBottomCounter ? .on : .off
+        menu.addItem(looksMenuItem())
+        addToggle(menu, "Remaining", store.showTopCounter, #selector(toggleTopCounter))
+        addToggle(menu, "Spent", store.showBottomCounter, #selector(toggleBottomCounter))
+        addToggle(menu, "Click Through", overlay.ignoresMouseEvents, #selector(toggleClickThrough))
+        addItem(menu, "Reset Size", #selector(resetSize))
+
+        menu.addItem(.separator())
+        addToggle(menu, "Sound Effects", SoundSettings.enabled, #selector(toggleSounds))
+        addToggle(menu, "Show in Dock", DockSettings.enabled, #selector(toggleDock))
+        addToggle(menu, "Launch at Login", AppInstall.launchesAtLogin, #selector(toggleLaunchAtLogin))
+
+        menu.addItem(.separator())
+        menu.addItem(previewMenuItem())
+        addItem(menu, "Inspect Payload…", #selector(inspect))
+        if !AppInstall.isInApplications {
+            addItem(menu, "Install to Applications…", #selector(installToApplications))
+        }
+
+        menu.addItem(.separator())
+        if store.budget != nil {
+            addItem(menu, "Sign Out", #selector(signOut))
+        }
+        addItem(menu, "Quit Tokenrash", #selector(quit), key: "q")
+
+        for item in menu.items { item.target = self }
+    }
+
+    private func addItem(_ menu: NSMenu, _ title: String, _ action: Selector, key: String = "") {
+        menu.addItem(withTitle: title, action: action, keyEquivalent: key)
+    }
+
+    private func addToggle(_ menu: NSMenu, _ title: String, _ on: Bool, _ action: Selector) {
+        let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+        item.state = on ? .on : .off
+    }
+
+    private func looksMenuItem() -> NSMenuItem {
         let looks = NSMenu()
         for look in WidgetLook.allCases {
             let item = looks.addItem(withTitle: look.menuTitle, action: #selector(chooseLook(_:)), keyEquivalent: "")
@@ -112,37 +158,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.state = store.look == look ? .on : .off
             item.target = self
         }
-        let lookItem = NSMenuItem(title: "Look", action: nil, keyEquivalent: "")
-        lookItem.submenu = looks
-        menu.addItem(lookItem)
-        menu.addItem(withTitle: "Reset size", action: #selector(resetSize), keyEquivalent: "")
+        let item = NSMenuItem(title: "Look", action: nil, keyEquivalent: "")
+        item.submenu = looks
+        return item
+    }
+
+    private func previewMenuItem() -> NSMenuItem {
         let preview = NSMenu()
-        preview.addItem(withTitle: "10% left — bell", action: #selector(previewTen), keyEquivalent: "")
-        preview.addItem(withTitle: "5% left — bells", action: #selector(previewFive), keyEquivalent: "")
-        preview.addItem(withTitle: "1% left — siren", action: #selector(previewSiren), keyEquivalent: "")
-        preview.addItem(withTitle: "Counter flap", action: #selector(previewFlap), keyEquivalent: "")
+        preview.addItem(withTitle: "10% Remaining", action: #selector(previewTen), keyEquivalent: "")
+        preview.addItem(withTitle: "5% Remaining", action: #selector(previewFive), keyEquivalent: "")
+        preview.addItem(withTitle: "1% Remaining", action: #selector(previewSiren), keyEquivalent: "")
+        preview.addItem(withTitle: "Flap", action: #selector(previewFlap), keyEquivalent: "")
         preview.addItem(.separator())
-        preview.addItem(withTitle: "Play all", action: #selector(previewAllWarnings), keyEquivalent: "")
+        preview.addItem(withTitle: "Play All", action: #selector(previewAllWarnings), keyEquivalent: "")
         for item in preview.items { item.target = self }
-        let previewItem = NSMenuItem(title: "Preview warnings", action: nil, keyEquivalent: "")
-        previewItem.submenu = preview
-        menu.addItem(previewItem)
-        menu.addItem(.separator())
-        if !AppInstall.isInApplications {
-            menu.addItem(withTitle: "Install to Applications…", action: #selector(installToApplications), keyEquivalent: "")
-        }
-        let login = menu.addItem(withTitle: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
-        login.state = AppInstall.launchesAtLogin ? .on : .off
-        menu.addItem(.separator())
-        if store.budget != nil {
-            menu.addItem(withTitle: "Sign out", action: #selector(signOut), keyEquivalent: "")
-        }
-        menu.addItem(withTitle: "Quit Tokenrash", action: #selector(quit), keyEquivalent: "q")
-        for item in menu.items { item.target = self }
+        let item = NSMenuItem(title: "Preview Alarms", action: nil, keyEquivalent: "")
+        item.submenu = preview
+        return item
     }
 
     @objc private func toggleOverlay() {
-        overlay.isVisible ? overlay.orderOut(nil) : overlay.orderFrontRegardless()
+        if overlay.isVisible {
+            overlay.orderOut(nil)
+            syncOverlayActivity()
+        } else {
+            revealOverlay()
+        }
     }
 
     @objc private func signInOrRefresh() {
@@ -158,27 +199,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func previewTen() {
-        overlay.orderFrontRegardless()
+        revealOverlay()
         store.previewWarning(TokenrashConfig.alarmSteps[0])
     }
 
     @objc private func previewFive() {
-        overlay.orderFrontRegardless()
+        revealOverlay()
         store.previewWarning(TokenrashConfig.alarmSteps[1])
     }
 
     @objc private func previewSiren() {
-        overlay.orderFrontRegardless()
+        revealOverlay()
         store.previewWarning(TokenrashConfig.alarmSteps[2])
     }
 
     @objc private func previewFlap() {
-        overlay.orderFrontRegardless()
+        revealOverlay()
         store.previewFlap()
     }
 
     @objc private func previewAllWarnings() {
-        overlay.orderFrontRegardless()
+        revealOverlay()
         store.previewAllWarnings()
     }
 
@@ -262,7 +303,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         frame.size = NSSize(width: 200, height: 300)
         frame.origin.y += oldHeight - 300
         overlay.setFrame(frame, display: true)
+        persistOverlayFrame()
+    }
+
+    @objc private func persistOverlayFrame() {
         UserDefaults.standard.set(NSStringFromRect(overlay.frame), forKey: "overlay.frame.v2")
+    }
+
+    @objc private func overlayOcclusionChanged() {
+        syncOverlayActivity()
+    }
+
+    private func revealOverlay() {
+        overlay.orderFrontRegardless()
+        syncOverlayActivity()
+    }
+
+    private func syncOverlayActivity() {
+        store.overlayActive = overlay.isVisible && overlay.occlusionState.contains(.visible)
     }
 
     private func positionOverlay() {
@@ -298,7 +356,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             statusItem.button?.toolTip = "Tokenrash — sign in to load daily budget"
             statusItem.button?.contentTintColor = nil
         }
-        UserDefaults.standard.set(NSStringFromRect(overlay.frame), forKey: "overlay.frame.v2")
         syncDockIcon()
     }
 
@@ -316,13 +373,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func syncDockIcon() {
         guard DockSettings.enabled else { return }
         let remaining = store.remainingFraction
+        let used = store.usedFraction
         let siren = store.isSiren
         let flash = siren && Int(Date().timeIntervalSince1970 * 2) % 2 == 0
         let badge = store.budget.map { TokenFormat.dockBadge($0.remaining) }
-        let key = "\(store.look.rawValue)-\(Int((remaining * 1000).rounded()))-\(flash)-\(badge ?? "")"
+        let key = "\(store.look.rawValue)-\(Int((remaining * 1000).rounded()))-\(Int((used * 1000).rounded()))-\(flash)-\(badge ?? "")"
         guard key != lastDockKey else { return }
         lastDockKey = key
-        DockIcon.apply(remaining: remaining, siren: flash, badge: badge, look: store.look)
+        DockIcon.apply(remaining: remaining, used: used, siren: flash, badge: badge, look: store.look)
     }
 }
 
