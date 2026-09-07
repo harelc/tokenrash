@@ -12,7 +12,7 @@ Newest first. Commit subjects are the source of truth; bodies are folded in wher
 - Clone URL is `https://github.com/Lightricks/tokenrash.git`.
 - Fetch personal JSON from `GET /api/me` (`/me` is the SPA). After sign-in, cookies live in the WebKit data store and polls use `URLSession` — no always-on keeper WebView. If the IAP cookie dies, an off-screen WebView runs the Google challenge and is torn down again; the login window only appears when Google still needs a person.
 - Poll faster as remaining drops (45s below 20%, 30s below 10%) so a binge is not three minutes late.
-- Signed-out is an empty glass with **Sign In** on the yoke, not a fake 62% hourglass. Crossing 10% remaining while the overlay is hidden brings it forward once; bells still fire when it is off-screen.
+- Signed-out is an empty glass with **Sign in** on both yokes, not a dash or a fake 62% hourglass. Crossing 10% remaining while the overlay is hidden brings it forward once; bells still fire when it is off-screen.
 - Overlay hourglass is a Metal fragment shader (~10 fps while sand flows, paused when hidden, occluded, empty, or full) so a Canvas timeline is not burning CPU all day. Dock tile stays a still Canvas snapshot.
 - Menu is grouped (overlay, look/counters, prefs, preview, account) and title-cased. Overlay frame is saved on move/resize, not every second.
 - `swiftc` builds with `-swift-version 6`. Alarm/flap audio state is `@MainActor` so mutable globals are not a Swift 6 error.

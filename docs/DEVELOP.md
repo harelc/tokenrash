@@ -97,7 +97,7 @@ There is no JWT or `gcloud` token. Google IAP cookies live in `WKWebsiteDataStor
 - **Live fetch** — `URLSession` `GET /api/me` with cookies copied from `WKHTTPCookieStore`. HTML or 401/403 means the IAP cookie is dead; WebKit then runs the Google challenge. `Set-Cookie` on a 200 is written back to the WebKit store. There is no always-on keeper panel.
 - **Sniffer** — injected `fetch` / XHR hook during login posts `{ url, body }` only for `/api/me` and `/me` URLs; `/tree` is ignored.
 
-Safari user-agent is set so IAP does not bounce to a broken client. Signed-out is an empty glass with **Sign In** on the remaining yoke, not a fake 62% hourglass.
+Safari user-agent is set so IAP does not bounce to a broken client. Signed-out is an empty glass with **Sign in** on both yokes, not a fake 62% hourglass.
 
 ## Alarms and sound
 

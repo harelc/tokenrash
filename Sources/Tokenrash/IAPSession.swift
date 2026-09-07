@@ -91,7 +91,7 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
-        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
         decisionHandler(.allow)
     }
@@ -345,21 +345,24 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         }
         return r;
         """
-        let result: Any? = await withCheckedContinuation { continuation in
+        let pulled: (status: Int, body: String, path: String)? = await withCheckedContinuation { continuation in
             webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { outcome in
                 switch outcome {
-                case .success(let value): continuation.resume(returning: value)
-                case .failure: continuation.resume(returning: nil)
+                case .success(let value):
+                    let dict = value as? [String: Any]
+                    let status = (dict?["status"] as? Int) ?? (dict?["status"] as? Double).map(Int.init) ?? 0
+                    let body = dict?["body"] as? String ?? ""
+                    let path = dict?["path"] as? String ?? "/api/me"
+                    continuation.resume(returning: (status, body, path))
+                case .failure:
+                    continuation.resume(returning: nil)
                 }
             }
         }
-        guard let dict = result as? [String: Any] else { return }
-        let status = (dict["status"] as? Int) ?? (dict["status"] as? Double).map(Int.init) ?? 0
-        let body = dict["body"] as? String ?? ""
-        let path = dict["path"] as? String ?? "/api/me"
-        appendCapture(source: "GET \(path) \(status)", body: body)
-        guard status == 200 else { return }
-        ingest(body, source: "GET \(path)")
+        guard let pulled else { return }
+        appendCapture(source: "GET \(pulled.path) \(pulled.status)", body: pulled.body)
+        guard pulled.status == 200 else { return }
+        ingest(pulled.body, source: "GET \(pulled.path)")
     }
 
     private func harvestFromPageText() async {

@@ -43,19 +43,20 @@ final class BudgetStore {
 
     var remainingPlate: String {
         if let preview = previewRemainingPlate { return preview }
-        if budget == nil, previewRemaining == nil { return "Sign In" }
+        if budget == nil, previewRemaining == nil { return "Sign in" }
         if let fraction = previewRemaining, let budget {
             return TokenFormat.usd(budget.limit * fraction)
         }
-        return budget.map { TokenFormat.usd($0.remaining) } ?? "Sign In"
+        return budget.map { TokenFormat.usd($0.remaining) } ?? "Sign in"
     }
 
     var spentPlate: String {
         if let preview = previewSpentPlate { return preview }
+        if budget == nil, previewRemaining == nil { return "Sign in" }
         if let fraction = previewRemaining, let budget {
             return TokenFormat.usd(budget.limit * (1 - fraction))
         }
-        return budget.map { TokenFormat.usd($0.used) } ?? "—"
+        return budget.map { TokenFormat.usd($0.used) } ?? "Sign in"
     }
 
     var isSiren: Bool {
