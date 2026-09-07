@@ -6,6 +6,11 @@ Newest first. Commit subjects are the source of truth; bodies are folded in wher
 
 ## 2026-09-07
 
+### Changed
+
+- Bundle id is `com.lightricks.tokenrash` so the app identity matches the org, not a personal account. Preferences and Launch at Login live under the new id.
+- Clone URL is `https://github.com/Lightricks/tokenrash.git`.
+
 ### Added
 
 - Five distinct hourglass looks (Horologist, Inkwell, Playroom, Telemetry, Jelly) so the widget can feel classic, cute, or futuristic rather than five tints of one glass. Menu **Look**. (`faab630`)

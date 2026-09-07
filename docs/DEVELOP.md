@@ -6,7 +6,7 @@ Tokenrash is a small SwiftUI + AppKit overlay. Remaining daily budget comes from
 
 ## Requirements
 
-Apple silicon, macOS 14+, Xcode Command Line Tools. Bundle id `com.harel.tokenrash`. `Info.plist` still reports version `0.1.0`.
+Apple silicon, macOS 14+, Xcode Command Line Tools. Bundle id `com.lightricks.tokenrash`. `Info.plist` still reports version `0.1.0`.
 
 ## Build and run
 
@@ -107,7 +107,7 @@ Steps in `TokenrashConfig.alarmSteps`: 10% (bell), 5% (bells), 1% (siren + red f
 
 ## Preferences
 
-All under the app’s standard `UserDefaults` (bundle `com.harel.tokenrash`):
+All under the app’s standard `UserDefaults` (bundle `com.lightricks.tokenrash`):
 
 | Key | Default | Meaning |
 |---|---|---|

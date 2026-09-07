@@ -53,7 +53,7 @@ enum AppInstall {
 
     private static func terminateOtherCopies(at url: URL) {
         let dest = url.resolvingSymlinksInPath()
-        for app in NSRunningApplication.runningApplications(withBundleIdentifier: "com.harel.tokenrash") {
+        for app in NSWorkspace.shared.runningApplications {
             guard app != .current else { continue }
             if let bundle = app.bundleURL?.resolvingSymlinksInPath(), bundle == dest {
                 app.terminate()

@@ -11,7 +11,7 @@ Menu-bar accessory: no Dock icon. Click the hourglass for the menu (show/hide th
 Apple silicon, macOS 14+, Xcode Command Line Tools.
 
 ```bash
-git clone https://github.com/harelc/tokenrash.git
+git clone https://github.com/Lightricks/tokenrash.git
 cd tokenrash
 chmod +x scripts/*.sh
 ./scripts/install.sh
