@@ -11,22 +11,23 @@ struct OverlayView: View {
     var body: some View {
         GeometryReader { geo in
             let scale = min(geo.size.width / design.width, geo.size.height / design.height)
+            let look = store.look
             ZStack {
                 HourglassView(
                     remainingFraction: store.remainingFraction,
                     reduceMotion: reduceMotion,
                     siren: store.isSiren,
-                    chrome: .instrument
+                    chrome: .instrument,
+                    look: look
                 )
                 .frame(width: design.width, height: design.height)
 
-                VStack(spacing: 0) {
-                    FlapYoke(text: store.remainingPlate, reduceMotion: reduceMotion, kind: .crown)
-                        .frame(width: design.width * 0.88, height: HourglassChrome.yoke)
-                    Spacer(minLength: 0)
-                    FlapYoke(text: store.spentPlate, reduceMotion: reduceMotion, kind: .plinth)
-                        .frame(width: design.width * 0.94, height: HourglassChrome.yoke)
-                }
+                LookChrome(
+                    look: look,
+                    remaining: store.remainingPlate,
+                    spent: store.spentPlate,
+                    reduceMotion: reduceMotion
+                )
                 .frame(width: design.width, height: design.height)
             }
             .frame(width: design.width, height: design.height)
@@ -38,72 +39,5 @@ struct OverlayView: View {
             }
         }
         .background(.clear)
-    }
-}
-
-/// Brass crown or plinth — the metal the glass is set into, with the flap well inside.
-private struct FlapYoke: View {
-    enum Kind { case crown, plinth }
-
-    var text: String
-    var reduceMotion: Bool
-    var kind: Kind
-
-    var body: some View {
-        let topR: CGFloat = kind == .crown ? 15 : 4
-        let botR: CGFloat = kind == .crown ? 4 : 15
-        ZStack {
-            UnevenRoundedRectangle(
-                topLeadingRadius: topR,
-                bottomLeadingRadius: botR,
-                bottomTrailingRadius: botR,
-                topTrailingRadius: topR,
-                style: .continuous
-            )
-            .fill(
-                LinearGradient(
-                    colors: [Palette.brassLite, Palette.brass, Palette.brassDark],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
-            .overlay(
-                UnevenRoundedRectangle(
-                    topLeadingRadius: topR,
-                    bottomLeadingRadius: botR,
-                    bottomTrailingRadius: botR,
-                    topTrailingRadius: topR,
-                    style: .continuous
-                )
-                .stroke(Palette.brassDark.opacity(0.62), lineWidth: 0.8)
-            )
-
-            UnevenRoundedRectangle(
-                topLeadingRadius: max(2.5, topR - 7),
-                bottomLeadingRadius: max(2.5, botR - 7),
-                bottomTrailingRadius: max(2.5, botR - 7),
-                topTrailingRadius: max(2.5, topR - 7),
-                style: .continuous
-            )
-            .fill(Color(red: 0.09, green: 0.07, blue: 0.05).opacity(0.92))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 8)
-
-            SplitFlapBoard(text: text, reduceMotion: reduceMotion)
-        }
-        .overlay(alignment: kind == .crown ? .bottom : .top) {
-            Capsule()
-                .fill(
-                    LinearGradient(
-                        colors: [Palette.brassLite, Palette.brass, Palette.brassDark],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .overlay(Capsule().stroke(Palette.brassDark.opacity(0.5), lineWidth: 0.5))
-                .padding(.horizontal, 18)
-                .frame(height: 11)
-                .offset(y: kind == .crown ? 5 : -5)
-        }
     }
 }

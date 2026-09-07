@@ -66,6 +66,9 @@ enum Palette {
 
 struct HourglassGeom {
     let rect: CGRect
+    var silhouette: GlassSilhouette = .classic
+    var neckRatio: CGFloat = 0.028
+    var bulbRatio: CGFloat = 0.48
 
     var cx: CGFloat { rect.midX }
     var topY: CGFloat { rect.minY }
@@ -76,10 +79,22 @@ struct HourglassGeom {
     func halfWidth(atY y: CGFloat) -> CGFloat {
         let t = (y - topY) / max(height, 1)
         let d = abs(t - 0.5) * 2
-        let eased = d * d * (3 - 2 * d)
-        let neck = rect.width * 0.028
-        let bulb = rect.width * 0.48
-        return neck + (bulb - neck) * eased
+        let neck = rect.width * neckRatio
+        let bulb = rect.width * bulbRatio
+        let blend: CGFloat
+        switch silhouette {
+        case .classic:
+            blend = d * d * (3 - 2 * d)
+        case .column:
+            blend = pow(d, 2.35)
+        case .toy:
+            blend = d * d * (3 - 2 * d)
+        case .diamond:
+            blend = d
+        case .blob:
+            blend = d * d
+        }
+        return neck + (bulb - neck) * blend
     }
 
     func outline() -> Path {
@@ -138,6 +153,7 @@ struct HourglassView: View {
     var reduceMotion: Bool
     var siren: Bool = false
     var chrome: HourglassChrome = .instrument
+    var look: WidgetLook = .horologist
     /// Frozen frame for Dock snapshots — no TimelineView or falling grains.
     var animate: Bool = true
     /// Used when `animate` is false so the siren can still pulse on redraws.
@@ -175,11 +191,14 @@ struct HourglassView: View {
     private func hourglassCanvas(time: TimeInterval) -> some View {
         Canvas { context, size in
                 let glassRect = HourglassChrome.glassRect(in: size, chrome: chrome)
-                let geom = HourglassGeom(rect: glassRect)
+                let geom = HourglassGeom(
+                    rect: glassRect,
+                    silhouette: look.silhouette,
+                    neckRatio: look.neck,
+                    bulbRatio: look.bulb
+                )
                 let pulse = sirenPulse(time: time)
-                let sandColor = siren
-                    ? Color(red: 0.95, green: 0.08 + 0.18 * (1 - pulse), blue: 0.06)
-                    : Palette.sand(remaining: remainingFraction)
+                let sandColor = look.sand(remaining: remainingFraction, siren: siren, pulse: pulse)
 
                 drawGlow(context: &context, size: size, remaining: remainingFraction, sirenPulse: pulse)
                 if chrome == .icon {
@@ -187,7 +206,7 @@ struct HourglassView: View {
                 }
 
                 let outline = geom.outline()
-                context.fill(outline, with: .color(Palette.soot.opacity(0.55)))
+                context.fill(outline, with: .color(look.cavityFill(siren: false, pulse: 0)))
 
                 var inner = context
                 inner.clipToLayer { $0.fill(outline, with: .color(.white)) }
@@ -196,33 +215,37 @@ struct HourglassView: View {
                 let topSand = max(4, topFull * remainingFraction)
                 let topStart = geom.neckY - topSand
                 if remainingFraction > 0.01 {
-                    let topPath = geom.sandBand(from: topStart, to: geom.neckY - 2, time: time, wobble: 1.1)
+                    let topPath = geom.sandBand(from: topStart, to: geom.neckY - 2, time: time, wobble: 1.1 * look.wobble)
                     inner.fill(topPath, with: .linearGradient(
                         Gradient(colors: [sandColor.opacity(0.95), sandColor.opacity(0.7)]),
                         startPoint: CGPoint(x: geom.cx, y: topStart),
                         endPoint: CGPoint(x: geom.cx, y: geom.neckY)
                     ))
-                    drawTicks(context: &inner, geom: geom, from: topStart + 4, to: geom.neckY - 8, time: time, color: sandColor)
+                    if look.showTicks {
+                        drawTicks(context: &inner, geom: geom, from: topStart + 4, to: geom.neckY - 8, time: time, color: sandColor)
+                    }
                 }
 
                 let bottomFull = geom.bottomY - geom.neckY - 10
                 let bottomSand = max(usedFraction > 0.01 ? 8 : 0, bottomFull * usedFraction)
                 let bottomTop = geom.bottomY - bottomSand
                 if usedFraction > 0.01 {
-                    let bottomPath = geom.sandBand(from: bottomTop, to: geom.bottomY - 3, time: time, wobble: 0.7)
+                    let bottomPath = geom.sandBand(from: bottomTop, to: geom.bottomY - 3, time: time, wobble: 0.7 * look.wobble)
                     inner.fill(bottomPath, with: .linearGradient(
                         Gradient(colors: [sandColor.opacity(0.75), sandColor]),
                         startPoint: CGPoint(x: geom.cx, y: bottomTop),
                         endPoint: CGPoint(x: geom.cx, y: geom.bottomY)
                     ))
-                    drawTicks(context: &inner, geom: geom, from: bottomTop + 6, to: geom.bottomY - 8, time: time + 4, color: sandColor)
+                    if look.showTicks {
+                        drawTicks(context: &inner, geom: geom, from: bottomTop + 6, to: geom.bottomY - 8, time: time + 4, color: sandColor)
+                    }
                 }
 
                 if remainingFraction > 0.01, remainingFraction < 0.995 {
                     var stream = Path()
                     stream.move(to: CGPoint(x: geom.cx, y: geom.neckY - 6))
                     stream.addLine(to: CGPoint(x: geom.cx, y: min(bottomTop + 2, geom.neckY + 40)))
-                    inner.stroke(stream, with: .color(sandColor.opacity(0.55)), lineWidth: 2.2)
+                    inner.stroke(stream, with: .color(sandColor.opacity(0.55)), lineWidth: look.streamWidth)
                 }
 
                 if animate {
@@ -235,25 +258,14 @@ struct HourglassView: View {
                 }
 
                 if siren {
-                    inner.fill(outline, with: .color(Color.red.opacity(0.12 + 0.38 * pulse)))
+                    inner.fill(outline, with: .color(look.cavityFill(siren: true, pulse: pulse)))
                 }
 
                 context.stroke(outline, with: .linearGradient(
-                    Gradient(colors: siren
-                        ? [
-                            Color.red.opacity(0.35 + 0.55 * pulse),
-                            Color(red: 1, green: 0.2, blue: 0.1).opacity(0.8),
-                            Color.red.opacity(0.2 + 0.5 * pulse)
-                        ]
-                        : [
-                            Color.white.opacity(0.55),
-                            Palette.brassLite.opacity(0.35),
-                            Color.white.opacity(0.12)
-                        ]
-                    ),
+                    Gradient(colors: look.rimColors(siren: siren, pulse: pulse)),
                     startPoint: CGPoint(x: glassRect.minX, y: glassRect.minY),
                     endPoint: CGPoint(x: glassRect.maxX, y: glassRect.maxY)
-                ), lineWidth: siren ? 2.4 : 1.6)
+                ), lineWidth: siren ? look.rimWidth + 0.8 : look.rimWidth)
 
                 var highlight = Path()
                 highlight.move(to: CGPoint(x: geom.cx - geom.halfWidth(atY: glassRect.minY + 18) + 6, y: glassRect.minY + 16))
@@ -261,7 +273,7 @@ struct HourglassView: View {
                     to: CGPoint(x: geom.cx - 8, y: geom.neckY - 10),
                     control: CGPoint(x: geom.cx - geom.halfWidth(atY: geom.neckY - 50) - 4, y: geom.neckY - 70)
                 )
-                context.stroke(highlight, with: .color(.white.opacity(0.28)), lineWidth: 1.1)
+                context.stroke(highlight, with: .color(look.highlight), lineWidth: look == .jelly ? 2.2 : 1.1)
 
                 drawCollars(context: &context, geom: geom)
                 if chrome == .icon {
@@ -279,7 +291,7 @@ struct HourglassView: View {
     private func drawGlow(context: inout GraphicsContext, size: CGSize, remaining: Double, sirenPulse: Double) {
         let color = siren
             ? Color.red.opacity(0.2 + 0.55 * sirenPulse)
-            : Palette.sand(remaining: remaining).opacity(remaining < 0.22 ? 0.32 : 0.14)
+            : look.sand(remaining: remaining, siren: false, pulse: 0).opacity(remaining < 0.22 ? 0.32 : 0.14)
         let rect = CGRect(x: size.width * 0.15, y: size.height * 0.12, width: size.width * 0.7, height: size.height * 0.6)
         context.fill(
             Path(ellipseIn: rect.insetBy(dx: 10, dy: 20)),
@@ -348,16 +360,21 @@ struct HourglassView: View {
     private func fillBrass(context: inout GraphicsContext, rect: CGRect, radius: CGFloat = 4) {
         let path = Path(roundedRect: rect, cornerRadius: radius)
         context.fill(path, with: .linearGradient(
-            Gradient(colors: [Palette.brassLite, Palette.brass, Palette.brassDark]),
+            Gradient(colors: [look.metalLite, look.metal, look.metalDark]),
             startPoint: CGPoint(x: rect.minX, y: rect.minY),
             endPoint: CGPoint(x: rect.maxX, y: rect.maxY)
         ))
-        context.stroke(path, with: .color(Palette.brassDark.opacity(0.7)), lineWidth: 0.6)
+        context.stroke(path, with: .color(look.metalDark.opacity(0.7)), lineWidth: 0.6)
     }
 
     private func stepGrains(date: Date, size: CGSize) {
         let glassRect = HourglassChrome.glassRect(in: size, chrome: chrome)
-        let geom = HourglassGeom(rect: glassRect)
+        let geom = HourglassGeom(
+            rect: glassRect,
+            silhouette: look.silhouette,
+            neckRatio: look.neck,
+            bulbRatio: look.bulb
+        )
         let dt: CGFloat = 1.0 / 40.0
         let bottomFull = geom.bottomY - geom.neckY - 10
         let bottomSand = max(usedFraction > 0.01 ? 8 : 0, bottomFull * usedFraction)

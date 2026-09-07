@@ -101,6 +101,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sounds.state = SoundSettings.enabled ? .on : .off
         let dock = menu.addItem(withTitle: "Show in Dock", action: #selector(toggleDock), keyEquivalent: "")
         dock.state = DockSettings.enabled ? .on : .off
+        let looks = NSMenu()
+        for look in WidgetLook.allCases {
+            let item = looks.addItem(withTitle: look.menuTitle, action: #selector(chooseLook(_:)), keyEquivalent: "")
+            item.representedObject = look.rawValue
+            item.state = store.look == look ? .on : .off
+            item.target = self
+        }
+        let lookItem = NSMenuItem(title: "Look", action: nil, keyEquivalent: "")
+        lookItem.submenu = looks
+        menu.addItem(lookItem)
         menu.addItem(withTitle: "Reset size", action: #selector(resetSize), keyEquivalent: "")
         let preview = NSMenu()
         preview.addItem(withTitle: "10% left — bell", action: #selector(previewTen), keyEquivalent: "")
@@ -182,6 +192,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleDock() {
         DockSettings.enabled.toggle()
         applyDockVisibility()
+    }
+
+    @objc private func chooseLook(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let look = WidgetLook(rawValue: raw) else { return }
+        store.look = look
+        WidgetLook.stored = look
+        lastDockKey = nil
+        syncDockIcon()
     }
 
     @objc private func installToApplications() {
@@ -286,10 +305,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let siren = store.isSiren
         let flash = siren && Int(Date().timeIntervalSince1970 * 2) % 2 == 0
         let badge = store.budget.map { TokenFormat.dockBadge($0.remaining) }
-        let key = "\(Int((remaining * 1000).rounded()))-\(flash)-\(badge ?? "")"
+        let key = "\(store.look.rawValue)-\(Int((remaining * 1000).rounded()))-\(flash)-\(badge ?? "")"
         guard key != lastDockKey else { return }
         lastDockKey = key
-        DockIcon.apply(remaining: remaining, siren: flash, badge: badge)
+        DockIcon.apply(remaining: remaining, siren: flash, badge: badge, look: store.look)
     }
 }
 

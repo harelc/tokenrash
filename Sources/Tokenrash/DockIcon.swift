@@ -6,11 +6,12 @@ enum DockIcon {
     private static let logical = CGSize(width: 128, height: 128)
     private static let scale: CGFloat = 2
 
-    static func apply(remaining: Double, siren: Bool, badge: String?) {
+    static func apply(remaining: Double, siren: Bool, badge: String?, look: WidgetLook) {
         let icon = DockHourglassIcon(
             remaining: remaining,
             siren: siren,
-            clock: Date().timeIntervalSinceReferenceDate
+            clock: Date().timeIntervalSinceReferenceDate,
+            look: look
         )
         if let image = rasterize(icon) {
             image.isTemplate = false
@@ -103,15 +104,17 @@ private struct DockHourglassIcon: View {
     var remaining: Double
     var siren: Bool
     var clock: TimeInterval
+    var look: WidgetLook
 
     var body: some View {
         ZStack {
-            Palette.soot
+            look.dockBackdrop
             HourglassView(
                 remainingFraction: remaining,
                 reduceMotion: true,
                 siren: siren,
                 chrome: .icon,
+                look: look,
                 animate: false,
                 clock: clock
             )

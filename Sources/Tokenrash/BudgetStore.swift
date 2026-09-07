@@ -23,6 +23,7 @@ final class BudgetStore {
     var previewRemainingPlate: String?
     /// When set, the spent split-flap shows this instead of the live spend.
     var previewSpentPlate: String?
+    var look: WidgetLook = WidgetLook.stored
     private var previewTask: Task<Void, Never>?
 
     var remainingFraction: Double {
