@@ -22,6 +22,27 @@ enum DockSettings {
     }
 }
 
+enum CounterSettings {
+    private static let topKey = "counters.top"
+    private static let bottomKey = "counters.bottom"
+
+    static var showTop: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: topKey) == nil { return true }
+            return UserDefaults.standard.bool(forKey: topKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: topKey) }
+    }
+
+    static var showBottom: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: bottomKey) == nil { return true }
+            return UserDefaults.standard.bool(forKey: bottomKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: bottomKey) }
+    }
+}
+
 @MainActor
 final class BudgetAlarms {
     var onTrip: (() -> Void)?

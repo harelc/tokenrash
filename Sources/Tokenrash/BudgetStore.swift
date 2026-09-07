@@ -24,6 +24,8 @@ final class BudgetStore {
     /// When set, the spent split-flap shows this instead of the live spend.
     var previewSpentPlate: String?
     var look: WidgetLook = WidgetLook.stored
+    var showTopCounter = CounterSettings.showTop
+    var showBottomCounter = CounterSettings.showBottom
     private var previewTask: Task<Void, Never>?
 
     var remainingFraction: Double {

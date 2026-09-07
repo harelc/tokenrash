@@ -101,6 +101,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sounds.state = SoundSettings.enabled ? .on : .off
         let dock = menu.addItem(withTitle: "Show in Dock", action: #selector(toggleDock), keyEquivalent: "")
         dock.state = DockSettings.enabled ? .on : .off
+        let topCounter = menu.addItem(withTitle: "Top counter", action: #selector(toggleTopCounter), keyEquivalent: "")
+        topCounter.state = store.showTopCounter ? .on : .off
+        let bottomCounter = menu.addItem(withTitle: "Bottom counter", action: #selector(toggleBottomCounter), keyEquivalent: "")
+        bottomCounter.state = store.showBottomCounter ? .on : .off
         let looks = NSMenu()
         for look in WidgetLook.allCases {
             let item = looks.addItem(withTitle: look.menuTitle, action: #selector(chooseLook(_:)), keyEquivalent: "")
@@ -192,6 +196,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleDock() {
         DockSettings.enabled.toggle()
         applyDockVisibility()
+    }
+
+    @objc private func toggleTopCounter() {
+        store.showTopCounter.toggle()
+        CounterSettings.showTop = store.showTopCounter
+    }
+
+    @objc private func toggleBottomCounter() {
+        store.showBottomCounter.toggle()
+        CounterSettings.showBottom = store.showBottomCounter
     }
 
     @objc private func chooseLook(_ sender: NSMenuItem) {

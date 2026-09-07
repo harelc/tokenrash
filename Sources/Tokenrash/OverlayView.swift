@@ -26,7 +26,9 @@ struct OverlayView: View {
                     look: look,
                     remaining: store.remainingPlate,
                     spent: store.spentPlate,
-                    reduceMotion: reduceMotion
+                    reduceMotion: reduceMotion,
+                    showTop: store.showTopCounter,
+                    showBottom: store.showBottomCounter
                 )
                 .frame(width: design.width, height: design.height)
             }

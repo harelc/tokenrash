@@ -6,13 +6,20 @@ struct LookChrome: View {
     var spent: String
     var reduceMotion: Bool
 
+    var showTop: Bool = true
+    var showBottom: Bool = true
+
     var body: some View {
         VStack(spacing: 0) {
-            LookYoke(text: remaining, reduceMotion: reduceMotion, look: look, kind: .crown)
-                .frame(width: HourglassChrome.design.width * look.crownWidth, height: HourglassChrome.yoke)
+            if showTop {
+                LookYoke(text: remaining, reduceMotion: reduceMotion, look: look, kind: .crown)
+                    .frame(width: HourglassChrome.design.width * look.crownWidth, height: HourglassChrome.yoke)
+            }
             Spacer(minLength: 0)
-            LookYoke(text: spent, reduceMotion: reduceMotion, look: look, kind: .plinth)
-                .frame(width: HourglassChrome.design.width * look.plinthWidth, height: HourglassChrome.yoke)
+            if showBottom {
+                LookYoke(text: spent, reduceMotion: reduceMotion, look: look, kind: .plinth)
+                    .frame(width: HourglassChrome.design.width * look.plinthWidth, height: HourglassChrome.yoke)
+            }
         }
     }
 }
