@@ -2,7 +2,7 @@
 
 User-facing install is in the [root README](../README.md). History of `main` is in [CHANGELOG.md](CHANGELOG.md).
 
-Tokenrash is a small SwiftUI + AppKit overlay. Remaining daily budget comes from Lightricks tokendash `GET /me` after Google IAP in a hidden `WKWebView`. There is no Xcode project; the `.app` is assembled by `scripts/build.sh`.
+Tokenrash is a small SwiftUI + AppKit overlay. Remaining daily budget comes from Lightricks tokendash `GET /api/me` after Google IAP in a hidden `WKWebView`. There is no Xcode project; the `.app` is assembled by `scripts/build.sh`.
 
 ## Requirements
 
@@ -81,10 +81,10 @@ The Dock tile uses `HourglassView(chrome: .icon, look:)` plus a remaining-USD ba
 Remaining is `limit − spend` from personal JSON:
 
 ```text
-GET /me  →  { email, today: { spend_usd, effective_limit_usd | standing_limit_usd } }
+GET /api/me  →  { email, today: { spend_usd, effective_limit_usd | standing_limit_usd } }
 ```
 
-`TokenBudgetParser.extract` only reads a root `today`. Org dumps (`nodes`, or `personas` without `today`) are dropped. Walking `/tree` cannot recover a manager’s own spend: team/org `spend` is the sum of children, and ICs appear once. Always use `/me`.
+`TokenBudgetParser.extract` only reads a root `today`. Org dumps (`nodes`, or `personas` without `today`) are dropped. Walking `/tree` cannot recover a manager’s own spend: team/org `spend` is the sum of children, and ICs appear once. Always use the personal card, not `/tree`.
 
 Poll interval is 180s (`TokenrashConfig.pollInterval`). **Refresh now** reloads in the keeper WebView.
 
@@ -94,8 +94,8 @@ There is no JWT or `gcloud` token. A `WKWebView` with the default data store hol
 
 - **Keeper panel** — off-screen, transparent, mouse-ignored. Hosts the WebView between logins. macOS used to shove this onto the display after restart or display wake as an unclickable `/me` window; `concealKeeper` re-parks it on screen-parameter, wake, and Space changes.
 - **Login window** — only when the navigation host is Google accounts or `iap.googleapis.com`. Closing it parks the WebView back in the keeper.
-- **Fetch** — `fetch('/me', { credentials: 'include', headers: { Accept: 'application/json' } })` inside the page.
-- **Sniffer** — injected `fetch` / XHR hook posts `{ url, body }` only for `/me` URLs; `/tree` is ignored.
+- **Fetch** — `fetch('/api/me', { credentials: 'include', headers: { Accept: 'application/json' } })` inside the page (`/me` is the SPA HTML; IAP still starts by navigating to `/me`).
+- **Sniffer** — injected `fetch` / XHR hook posts `{ url, body }` only for `/api/me` and `/me` URLs; `/tree` is ignored.
 
 Safari user-agent is set so IAP does not bounce to a broken client.
 

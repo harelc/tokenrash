@@ -206,15 +206,26 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         await harvestFromPageText()
     }
 
-    /// Personal card at `GET /me` (`Accept: application/json`). Not `/tree`.
+    /// Personal JSON is `GET /api/me`. Navigating to `/me` loads the SPA HTML.
     private func fetchMeJSON() async {
         let script = """
-        const r = await fetch('/me', {
-          credentials: 'include',
-          cache: 'no-store',
-          headers: { 'Accept': 'application/json' }
-        });
-        return { status: r.status, body: await r.text() };
+        const pull = async (path) => {
+          const r = await fetch(path, {
+            credentials: 'include',
+            cache: 'no-store',
+            headers: { 'Accept': 'application/json' }
+          });
+          return { path, status: r.status, body: await r.text() };
+        };
+        const looksJSON = (t) => {
+          const s = (t || '').trim();
+          return s.startsWith('{') || s.startsWith('[');
+        };
+        let r = await pull('/api/me');
+        if (!(r.status === 200 && looksJSON(r.body))) {
+          r = await pull('/me');
+        }
+        return r;
         """
         let result: Any? = await withCheckedContinuation { continuation in
             webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { outcome in
@@ -227,9 +238,10 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         guard let dict = result as? [String: Any] else { return }
         let status = (dict["status"] as? Int) ?? (dict["status"] as? Double).map(Int.init) ?? 0
         let body = dict["body"] as? String ?? ""
-        appendCapture(source: "GET /me \(status)", body: body)
+        let path = dict["path"] as? String ?? "/api/me"
+        appendCapture(source: "GET \(path) \(status)", body: body)
         guard status == 200 else { return }
-        ingest(body, source: "GET /me")
+        ingest(body, source: "GET \(path)")
     }
 
     private func harvestFromPageText() async {
@@ -288,12 +300,13 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         return prefix.hasPrefix("<!doctype") || prefix.hasPrefix("<html") || prefix.contains("<div id=\"root\"")
     }
 
-    /// Personal JSON is `GET /me`. Admin SPA also fetches `/tree`; never apply that.
+    /// Personal JSON is `GET /api/me` (and legacy `/me`). Admin SPA also fetches `/tree`; never apply that.
     private func isMeJSONURL(_ url: String) -> Bool {
         let path = url.split(separator: "?").first.map(String.init) ?? url
         let lower = path.lowercased()
         if lower.contains("/tree") { return false }
-        return lower.hasSuffix("/me") || lower.hasSuffix("/me.json") || lower == "/me" || lower == "me"
+        return lower.hasSuffix("/api/me") || lower.hasSuffix("/me") || lower.hasSuffix("/me.json")
+            || lower == "/me" || lower == "me" || lower == "/api/me"
     }
 
     /// `/tree` org dump: `{ nodes, personas }` — even if people have nested spend fields.
@@ -340,9 +353,9 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         if isAuthHost(host) {
             store.phase = .signingIn
             showLoginWindow()
-        } else if loginWindow?.isVisible == true {
-            closeLogin()
         }
+        // Do not park the WebView just because we left Google — that reparent
+        // mid-redirect drops the IAP cookie. ingest() closes the window.
     }
 
     private func isAuthHost(_ host: String) -> Bool {
@@ -388,7 +401,7 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
           const href = String(url || '');
           const path = href.split('?')[0].toLowerCase();
           if (path.includes('/tree')) return;
-          if (!(path.endsWith('/me') || path.endsWith('/me.json') || path === '/me' || path === 'me')) return;
+          if (!(path.endsWith('/api/me') || path.endsWith('/me') || path.endsWith('/me.json') || path === '/me' || path === 'me')) return;
           window.webkit.messageHandlers.tokenrash.postMessage({ url: href, body: t });
         } catch (e) {}
       };

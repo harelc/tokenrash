@@ -10,6 +10,7 @@ Newest first. Commit subjects are the source of truth; bodies are folded in wher
 
 - Bundle id is `com.lightricks.tokenrash` so the app identity matches the org, not a personal account. Preferences and Launch at Login live under the new id.
 - Clone URL is `https://github.com/Lightricks/tokenrash.git`.
+- Fetch personal JSON from `GET /api/me` (`/me` is the SPA). Keep the IAP window up until the budget is ingested so the WebView is not reparented mid-redirect.
 
 ### Added
 
