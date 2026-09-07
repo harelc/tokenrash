@@ -13,6 +13,8 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         .appendingPathComponent("Library/Logs/Tokenrash-last-me.json")
     private let captureURL = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("Library/Logs/Tokenrash-captures.jsonl")
+    private var silentHost: NSPanel?
+    private var recovering = false
     private let urlSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieAcceptPolicy = .never
@@ -32,8 +34,7 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
 
     func signIn() {
         store.phase = .signingIn
-        let view = ensureWebView()
-        view.load(URLRequest(url: TokenrashConfig.meURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+        loadMeInWebView()
     }
 
     /// URLSession `/api/me` with stored IAP cookies. Opens Google only if the session is dead.
@@ -43,7 +44,7 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
             case .ingested:
                 schedulePoll()
             case .unauthorized:
-                signIn()
+                loadMeInWebView()
             case .failed:
                 NSLog("[Tokenrash] refresh failed; keeping last budget")
             }
@@ -83,12 +84,7 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        syncBrowserChrome()
-    }
-
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        syncBrowserChrome()
         Task { await pageFinished() }
     }
 
@@ -97,9 +93,6 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
-        if let host = navigationAction.request.url?.host, isAuthHost(host) {
-            showLoginWindow()
-        }
         decisionHandler(.allow)
     }
 
@@ -145,7 +138,9 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         switch await fetchAPIMe() {
         case .ingested:
             schedulePoll()
-        case .unauthorized, .failed:
+        case .unauthorized:
+            if await hasAPICookies() { loadMeInWebView() }
+        case .failed:
             break
         }
     }
@@ -161,7 +156,9 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
                 switch await self.fetchAPIMe() {
                 case .ingested:
                     continue
-                case .unauthorized, .failed:
+                case .unauthorized:
+                    self.loadMeInWebView()
+                case .failed:
                     continue
                 }
             }
@@ -247,6 +244,52 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         if cookie.isSecure, url.scheme?.lowercased() != "https" { return false }
         if let expiry = cookie.expiresDate, expiry < Date() { return false }
         return true
+    }
+
+    private func hasAPICookies() async -> Bool {
+        let cookies = await allCookies()
+        return cookies.contains { Self.cookie($0, appliesTo: TokenrashConfig.apiMeURL) }
+    }
+
+    /// IAP refresh is a browser redirect through Google. Run it off-screen;
+    /// show a window only if navigation *finishes* still on an auth host.
+    private func loadMeInWebView() {
+        if loginWindow?.isVisible == true {
+            webView?.load(
+                URLRequest(url: TokenrashConfig.meURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+            )
+            return
+        }
+        if recovering, webView != nil { return }
+        recovering = true
+        let view = ensureWebView()
+        nestWebViewOffscreen(view)
+        view.load(
+            URLRequest(url: TokenrashConfig.meURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        )
+    }
+
+    private func nestWebViewOffscreen(_ view: WKWebView) {
+        if silentHost == nil {
+            let panel = NSPanel(
+                contentRect: NSRect(x: -2000, y: -2000, width: 8, height: 8),
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: false
+            )
+            panel.isReleasedWhenClosed = false
+            panel.hasShadow = false
+            panel.alphaValue = 0
+            panel.ignoresMouseEvents = true
+            panel.isExcludedFromWindowsMenu = true
+            panel.hidesOnDeactivate = false
+            panel.collectionBehavior = [.ignoresCycle, .transient, .stationary]
+            silentHost = panel
+        }
+        guard view.window !== loginWindow else { return }
+        view.removeFromSuperview()
+        silentHost?.contentView = view
+        silentHost?.orderFrontRegardless()
     }
 
     private func ensureWebView() -> WKWebView {
@@ -350,6 +393,7 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
             store.apply(budget: budget, rawJSON: pretty)
             try? pretty.write(to: dumpURL, atomically: true, encoding: .utf8)
             Task { @MainActor [weak self] in
+                self?.recovering = false
                 self?.teardownBrowser()
                 self?.schedulePoll()
             }
@@ -430,14 +474,6 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func syncBrowserChrome() {
-        let host = webView?.url?.host ?? ""
-        if isAuthHost(host) {
-            store.phase = .signingIn
-            showLoginWindow()
-        }
-    }
-
     private func isAuthHost(_ host: String) -> Bool {
         let h = host.lowercased()
         if h.contains("accounts.google.") { return true }
@@ -446,11 +482,15 @@ final class IAPSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMe
     }
 
     private func teardownBrowser() {
+        recovering = false
         loginWindow?.delegate = nil
         loginWindow?.orderOut(nil)
         loginWindow?.contentView = nil
         loginWindow = nil
         loginDelegate = nil
+        silentHost?.orderOut(nil)
+        silentHost?.contentView = nil
+        silentHost = nil
         guard let webView else { return }
         webView.stopLoading()
         webView.navigationDelegate = nil

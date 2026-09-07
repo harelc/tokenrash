@@ -93,8 +93,8 @@ Poll interval is adaptive (`TokenrashConfig.pollInterval(remaining:)`): 180s whe
 
 There is no JWT or `gcloud` token. Google IAP cookies live in `WKWebsiteDataStore.default()` and survive after the WebView is torn down.
 
-- **Login window** — a `WKWebView` exists only while signing in. It appears when the navigation host is Google accounts or `iap.googleapis.com`. After a successful ingest (sniffer or in-page `fetch('/api/me')`), the WebView is destroyed. Closing the window without a budget returns to signed-out.
-- **Live fetch** — `URLSession` `GET /api/me` with `Accept: application/json`, Safari user-agent, and a `Cookie` header copied from `WKHTTPCookieStore`. `Set-Cookie` on the response is written back to the WebKit store. There is no keeper panel.
+- **Login window** — a `WKWebView` exists for Google IAP (first sign-in, or when `URLSession` gets 401/302). It stays off-screen while IAP refreshes a cookie through Google; the window appears only if navigation finishes still on accounts.google.com / IAP. After ingest, the WebView is destroyed.
+- **Live fetch** — `URLSession` `GET /api/me` with cookies copied from `WKHTTPCookieStore`. HTML or 401/403 means the IAP cookie is dead; WebKit then runs the Google challenge. `Set-Cookie` on a 200 is written back to the WebKit store. There is no always-on keeper panel.
 - **Sniffer** — injected `fetch` / XHR hook during login posts `{ url, body }` only for `/api/me` and `/me` URLs; `/tree` is ignored.
 
 Safari user-agent is set so IAP does not bounce to a broken client. Signed-out is an empty glass with **Sign In** on the remaining yoke, not a fake 62% hourglass.
